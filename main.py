@@ -53,13 +53,18 @@ def _setup_xclid_patch() -> None:
 # CONFIG BLOCK — Edit these constants to customize the bot's behavior
 # ─────────────────────────────────────────────────────────────────────────────
 
-# X search query: financial/trading keywords with engagement filter
-# Adjust min_faves to raise/lower the engagement bar (default: 300 likes)
+# Expanded trending macro + commodities + indices query — tuned for 15-min runs (Feb 2026)
 SEARCH_QUERY = (
-    '(earnings OR "rate cut" OR "Federal Reserve" OR "hedge fund" OR "short squeeze" '
-    'OR $NVDA OR $TSLA OR $SPY OR $BTC OR $ETH OR "market crash" OR "all-time high" '
-    'OR "IPO" OR "bank failure" OR "CPI" OR "inflation") '
-    "min_faves:300 lang:en -filter:replies -filter:retweets"
+    '(earnings OR Fed OR "rate cut" OR "rate decision" OR CPI OR "jobs report" OR '
+    'FOMC OR Powell OR "interest rate" OR crash OR rally OR "bull run" OR '
+    'gold OR silver OR oil OR crude OR $GC OR $SI OR $CL OR $WTI OR '
+    '$TLT OR "long bond" OR "30 year treasury" OR "long duration" OR '
+    '$SPX OR "S&P 500" OR $DJI OR "Dow Jones" OR $RUT OR "Russell 2000" OR '
+    '$NDX OR "Nasdaq 100" OR $USDJPY OR "USD JPY" OR '
+    '$NVDA OR $TSLA OR $AAPL OR $AMZN OR $GOOGL OR $MSFT OR $AMD OR $SMCI OR '
+    '$BTC OR $ETH OR crypto OR bitcoin) '
+    '(min_faves:60 OR min_retweets:15) '
+    'lang:en -filter:replies'
 )
 
 # Groq model to use for scoring and summarization
