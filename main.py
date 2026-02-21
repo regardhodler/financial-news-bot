@@ -72,11 +72,11 @@ SEARCH_QUERY = (
 MODEL_ID = "llama-3.3-70b-versatile"
 
 # Minimum Groq impact score (1-10) required to send an alert
-# Raise to 9 for only truly major events; lower to 7 for more frequent alerts
-MIN_IMPACT_SCORE = 8
+# 5 = maximum earliness; raise to 7-8 for only significant events
+MIN_IMPACT_SCORE = 5
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
-MAX_ALERTS = 5
+MAX_ALERTS = 7
 
 # How many minutes back to search for tweets (5-min buffer over 15-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
@@ -219,23 +219,14 @@ async def scrape_tweets(api: API) -> list[dict]:
 def score_and_summarize(tweet_text: str, tweet_url: str, groq_client: Groq) -> dict | None:
     """
     Send tweet text to Groq LLaMA for market-impact scoring.
-    Returns dict with 'impact' (int 1-10) and 'summary' (str), or None on error.
-
-    Only returns a result if impact >= MIN_IMPACT_SCORE.
+    Returns dict with 'impact', 'sentiment', 'category', 'summary', or None on error.
     """
-    prompt = f"""You are a professional financial analyst. Analyze this tweet and respond with ONLY a JSON object.
+    prompt = f"""You are a professional macro/finance trader. Rate this tweet for real market-moving impact.
 
-Tweet:
-{tweet_text}
+Tweet: {tweet_text}
 
-Rate the market-moving impact on a scale of 1-10:
-- 9-10: Massive, immediate market impact (Fed rate decision, major bank failure, earnings surprise >10%)
-- 7-8: Significant impact (major company news, CPI beat/miss, large fund moves)
-- 5-6: Moderate relevance (sector news, analyst upgrades, minor economic data)
-- 1-4: Low impact (opinion, speculation, minor news, repeats of known info)
-
-Respond with ONLY this JSON (no markdown, no explanation):
-{{"impact": <integer 1-10>, "summary": "<one crisp sentence describing the market event>"}}"""
+Reply in EXACT JSON format with no extra text:
+{{"score": <integer 1-10>, "sentiment": "<Bullish OR Bearish OR Neutral>", "category": "<Commodities OR Macro OR Indices OR Bonds OR Forex OR Crypto OR Earnings>", "summary": "<one crisp actionable sentence, max 25 words>"}}"""
 
     try:
         response = groq_client.chat.completions.create(
@@ -248,11 +239,13 @@ Respond with ONLY this JSON (no markdown, no explanation):
         raw = response.choices[0].message.content.strip()
         result = json.loads(raw)
 
-        impact = int(result.get("impact", 0))
+        impact = int(result.get("score", 0))
+        sentiment = str(result.get("sentiment", "Neutral")).strip()
+        category = str(result.get("category", "Macro")).strip()
         summary = str(result.get("summary", "")).strip()
 
-        log.info(f"[Groq] Score: {impact}/10 | {summary[:80]}...")
-        return {"impact": impact, "summary": summary}
+        log.info(f"[Groq] Score: {impact}/10 | {sentiment} | {category} | {summary[:80]}...")
+        return {"impact": impact, "sentiment": sentiment, "category": category, "summary": summary}
 
     except json.JSONDecodeError as e:
         log.warning(f"[Groq] JSON parse error: {e} | Raw: {raw[:200]}")
@@ -269,12 +262,17 @@ Respond with ONLY this JSON (no markdown, no explanation):
 def build_alert_message(tweet: dict, score: dict) -> str:
     """
     Format a tweet + Groq score into a clean alert message.
-    Extracts cashtags/hashtags for the tags line.
+    Includes sentiment, category, cashtags/hashtags.
     """
     impact = score["impact"]
+    sentiment = score.get("sentiment", "Neutral")
+    category = score.get("category", "Macro")
     summary = score["summary"]
     url = tweet["url"]
     ts = tweet["created_at"].strftime("%Y-%m-%d %H:%M UTC")
+
+    # Sentiment emoji
+    sent_emoji = {"Bullish": "🟢", "Bearish": "🔴"}.get(sentiment, "⚪")
 
     # Extract cashtags ($NVDA) and hashtags (#CPI) from tweet text
     cashtags = re.findall(r"\$[A-Z]{1,5}", tweet["text"])
@@ -283,7 +281,8 @@ def build_alert_message(tweet: dict, score: dict) -> str:
     tags_line = f"📊 {tags}" if tags else ""
 
     lines = [
-        f"🚨 [IMPACT {impact}/10] {summary}",
+        f"🚨 [IMPACT {impact}/10] {sent_emoji} {sentiment} | {category}",
+        f"{summary}",
         "",
         f"🔗 {url}",
         f"🕒 {ts}",
