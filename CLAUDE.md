@@ -47,12 +47,26 @@ financial-news-bot/
 
 ```
 X_ACCOUNT_1_USER, X_ACCOUNT_1_PASS, X_ACCOUNT_1_EMAIL  ← Required
+X_ACCOUNT_1_COOKIES  ← Recommended (bypasses Cloudflare; see below)
 X_ACCOUNT_2_*  ← Optional (improves reliability)
 X_ACCOUNT_3_*  ← Optional
 GROQ_API_KEY   ← Required
 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  ← Required for Telegram
 DISCORD_WEBHOOK_URL  ← Optional (sends to both if set)
 ```
+
+### Cookie Auth (Cloudflare fix)
+
+GitHub Actions runners are often blocked by Cloudflare when doing the
+username/password login flow on x.com. To bypass this:
+
+1. Log in to X in a browser (Chrome/Firefox)
+2. Open DevTools → Application → Cookies → x.com
+3. Copy the values of `auth_token` and `ct0`
+4. Set the secret: `X_ACCOUNT_1_COOKIES=auth_token=<value>; ct0=<value>`
+
+When `X_ACCOUNT_N_COOKIES` is set for a slot, the bot skips the login
+step for that account and uses the cookie session directly.
 
 ## How to Extend
 

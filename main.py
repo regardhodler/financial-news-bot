@@ -68,8 +68,14 @@ log = logging.getLogger(__name__)
 async def login_accounts(api: API) -> int:
     """
     Add up to 3 X accounts to the twscrape pool and log them in.
-    Returns the number of accounts successfully added.
-    Returns 0 if no credentials are configured.
+
+    Supports two auth modes per account (checked in order):
+      1. Cookie auth  — set X_ACCOUNT_N_COOKIES="auth_token=xxx; ct0=yyy"
+         Extracted from a browser session; bypasses the Cloudflare-protected
+         login flow entirely.  Recommended for cloud/GitHub Actions environments.
+      2. Password auth — set X_ACCOUNT_N_USER / PASS / EMAIL as before.
+
+    Returns the number of accounts that are active after login, or 0 on failure.
     """
     accounts_added = 0
 
@@ -77,13 +83,18 @@ async def login_accounts(api: API) -> int:
         username = os.getenv(f"X_ACCOUNT_{i}_USER", "").strip()
         password = os.getenv(f"X_ACCOUNT_{i}_PASS", "").strip()
         email = os.getenv(f"X_ACCOUNT_{i}_EMAIL", "").strip()
+        cookies = os.getenv(f"X_ACCOUNT_{i}_COOKIES", "").strip()
 
         if not (username and password and email):
             continue  # Skip unconfigured slots
 
         try:
-            await api.pool.add_account(username, password, email, email)
-            log.info(f"[X Auth] Added account slot {i}: @{username}")
+            await api.pool.add_account(
+                username, password, email, email,
+                cookies=cookies if cookies else None,
+            )
+            auth_mode = "cookie" if cookies else "password"
+            log.info(f"[X Auth] Added account slot {i}: @{username} (mode={auth_mode})")
             accounts_added += 1
         except Exception as e:
             log.warning(f"[X Auth] Failed to add account {i} (@{username}): {e}")
@@ -94,12 +105,32 @@ async def login_accounts(api: API) -> int:
 
     try:
         await api.pool.login_all()
-        log.info(f"[X Auth] Logged in {accounts_added} account(s) successfully.")
     except Exception as e:
-        log.error(f"[X Auth] Login failed: {e}")
+        log.error(f"[X Auth] login_all() raised: {e}")
         return 0
 
-    return accounts_added
+    # Verify how many accounts are actually active — login_all() swallows
+    # per-account failures (e.g. Cloudflare blocks) without raising.
+    try:
+        all_accts = await api.pool.get_all()
+        active_count = sum(1 for a in all_accts if a.active)
+    except Exception:
+        # Older twscrape versions may not expose get_all(); fall back gracefully.
+        log.warning("[X Auth] Could not verify active account count (twscrape version).")
+        active_count = accounts_added
+
+    if active_count == 0:
+        log.error(
+            "[X Auth] 0 accounts active after login — all logins failed.\n"
+            "  Most likely cause: Cloudflare is blocking the password-based login\n"
+            "  flow from this IP (common on GitHub Actions / cloud runners).\n"
+            "  Fix: extract auth_token + ct0 cookies from a browser session and\n"
+            "  set X_ACCOUNT_1_COOKIES='auth_token=<value>; ct0=<value>' in secrets."
+        )
+        return 0
+
+    log.info(f"[X Auth] {active_count}/{accounts_added} account(s) active after login.")
+    return active_count
 
 
 # ─────────────────────────────────────────────────────────────────────────────
