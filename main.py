@@ -105,6 +105,9 @@ MARKET_TICKERS = {
     "IWM (Russell 2000)": "IWM",
     "DIA (DJ30)": "DIA",
     "💱 USDJPY": "USDJPY=X",
+    "₿ BTC": "BTC-USD",
+    "⟠ ETH": "ETH-USD",
+    "✕ XRP": "XRP-USD",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
