@@ -104,6 +104,12 @@ MARKET_TICKERS = {
     "NDX (Nasdaq 100)": "^NDX",
     "IWM (Russell 2000)": "IWM",
     "DIA (DJ30)": "DIA",
+    "😱 VIX": "^VIX",
+    "💵 DXY": "DX-Y.NYB",
+    "🛢 WTI Crude": "CL=F",
+    "🇨🇳 China (CSI 300)": "000300.SS",
+    "🇯🇵 Japan (Nikkei 225)": "^N225",
+    "🇮🇳 India (Nifty 50)": "^NSEI",
     "💱 USDJPY": "USDJPY=X",
     "₿ BTC": "BTC-USD",
     "⟠ ETH": "ETH-USD",
@@ -404,6 +410,26 @@ def send_discord(message: str) -> bool:
 # MARKET SNAPSHOT — live prices via yfinance
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_fear_greed() -> str | None:
+    """
+    Fetch the CNN Fear & Greed Index score and label.
+    Returns a formatted string like '😱 Fear & Greed: 32 (Fear)', or None on failure.
+    """
+    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+    try:
+        resp = httpx.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        data = resp.json()
+        score = round(data["fear_and_greed"]["score"])
+        label = data["fear_and_greed"]["rating"]
+        # Clean up label: "Extreme Fear" → "Extreme Fear"
+        label = label.replace("_", " ").title()
+        return f"😱 Fear & Greed: {score} ({label})"
+    except Exception as e:
+        log.warning(f"[Snapshot] Failed to fetch Fear & Greed Index: {e}")
+        return None
+
+
 def get_market_snapshot() -> str | None:
     """
     Fetch current prices + daily % change for MARKET_TICKERS.
@@ -427,6 +453,12 @@ def get_market_snapshot() -> str | None:
                     lines.append(f"⚪ {label}: ${price:,.2f}" if price else f"⚪ {label}: N/A")
             except Exception:
                 lines.append(f"⚪ {label}: N/A")
+
+        # Append Fear & Greed Index
+        fg_line = get_fear_greed()
+        if fg_line:
+            lines.append("")
+            lines.append(fg_line)
 
         lines.append(f"\n🕒 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
         return "\n".join(lines)
