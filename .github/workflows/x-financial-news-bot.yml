@@ -1,0 +1,47 @@
+name: X Financial News Bot
+
+on:
+  schedule:
+    # Runs every 15 minutes
+    - cron: '*/15 * * * *'
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    name: Scrape, Analyze & Alert
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # X Account credentials (1 required, 2-3 recommended for reliability)
+      X_ACCOUNT_1_USER: ${{ secrets.X_ACCOUNT_1_USER }}
+      X_ACCOUNT_1_PASS: ${{ secrets.X_ACCOUNT_1_PASS }}
+      X_ACCOUNT_1_EMAIL: ${{ secrets.X_ACCOUNT_1_EMAIL }}
+      X_ACCOUNT_2_USER: ${{ secrets.X_ACCOUNT_2_USER }}
+      X_ACCOUNT_2_PASS: ${{ secrets.X_ACCOUNT_2_PASS }}
+      X_ACCOUNT_2_EMAIL: ${{ secrets.X_ACCOUNT_2_EMAIL }}
+      X_ACCOUNT_3_USER: ${{ secrets.X_ACCOUNT_3_USER }}
+      X_ACCOUNT_3_PASS: ${{ secrets.X_ACCOUNT_3_PASS }}
+      X_ACCOUNT_3_EMAIL: ${{ secrets.X_ACCOUNT_3_EMAIL }}
+      # AI & notification credentials
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run financial news bot
+        run: python main.py
