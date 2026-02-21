@@ -18,12 +18,15 @@ jobs:
       X_ACCOUNT_1_USER: ${{ secrets.X_ACCOUNT_1_USER }}
       X_ACCOUNT_1_PASS: ${{ secrets.X_ACCOUNT_1_PASS }}
       X_ACCOUNT_1_EMAIL: ${{ secrets.X_ACCOUNT_1_EMAIL }}
+      X_ACCOUNT_1_COOKIES: ${{ secrets.X_ACCOUNT_1_COOKIES }}
       X_ACCOUNT_2_USER: ${{ secrets.X_ACCOUNT_2_USER }}
       X_ACCOUNT_2_PASS: ${{ secrets.X_ACCOUNT_2_PASS }}
       X_ACCOUNT_2_EMAIL: ${{ secrets.X_ACCOUNT_2_EMAIL }}
+      X_ACCOUNT_2_COOKIES: ${{ secrets.X_ACCOUNT_2_COOKIES }}
       X_ACCOUNT_3_USER: ${{ secrets.X_ACCOUNT_3_USER }}
       X_ACCOUNT_3_PASS: ${{ secrets.X_ACCOUNT_3_PASS }}
       X_ACCOUNT_3_EMAIL: ${{ secrets.X_ACCOUNT_3_EMAIL }}
+      X_ACCOUNT_3_COOKIES: ${{ secrets.X_ACCOUNT_3_COOKIES }}
       # AI & notification credentials
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
