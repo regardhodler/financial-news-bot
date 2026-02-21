@@ -71,12 +71,17 @@ SEARCH_QUERY = (
 # Options: llama-3.3-70b-versatile, llama-3.1-8b-instant (faster/cheaper)
 MODEL_ID = "llama-3.3-70b-versatile"
 
-# Minimum Groq impact score (1-10) required to send an alert
-# 5 = maximum earliness; raise to 7-8 for only significant events
-MIN_IMPACT_SCORE = 5
+# === SWEET SPOT FOR EARLINESS (Feb 2026) ===
+# 6 = best balance now that we have MIN_VIEWS + MIN_FOLLOWERS filters
+# 5 = maximum volume (more noise), 7 = ultra-clean (less early)
+MIN_IMPACT_SCORE = 6
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
 MAX_ALERTS = 7
+
+# Pre-LLM quality filters — skip low-quality tweets before burning Groq calls
+MIN_VIEWS = 2500
+MIN_FOLLOWERS = 7500
 
 # How many minutes back to search for tweets (5-min buffer over 15-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
@@ -192,6 +197,17 @@ async def scrape_tweets(api: API) -> list[dict]:
             if tweet_time < cutoff:
                 continue
 
+            views = tweet.viewCount or 0
+            followers = tweet.user.followersCount or 0
+
+            # Pre-LLM quality filter — skip low-quality tweets before Groq
+            if views < MIN_VIEWS or followers < MIN_FOLLOWERS:
+                log.info(
+                    f"[Scrape] Skipping @{tweet.user.username} | "
+                    f"{views} views, {followers} followers (below threshold)"
+                )
+                continue
+
             tweet_data = {
                 "id": tweet.id,
                 "text": tweet.rawContent,
@@ -199,11 +215,14 @@ async def scrape_tweets(api: API) -> list[dict]:
                 "created_at": tweet_time,
                 "author": tweet.user.username,
                 "likes": tweet.likeCount,
+                "views": views,
+                "followers": followers,
             }
             tweets.append(tweet_data)
             log.info(
                 f"[Scrape] Found: @{tweet.user.username} | "
-                f"{tweet.likeCount} likes | {tweet_time.strftime('%H:%M')} UTC"
+                f"{tweet.likeCount} likes | {views} views | "
+                f"{followers} followers | {tweet_time.strftime('%H:%M')} UTC"
             )
     except Exception as e:
         log.error(f"[Scrape] Search failed: {e}")
@@ -221,12 +240,17 @@ def score_and_summarize(tweet_text: str, tweet_url: str, groq_client: Groq) -> d
     Send tweet text to Groq LLaMA for market-impact scoring.
     Returns dict with 'impact', 'sentiment', 'category', 'summary', or None on error.
     """
-    prompt = f"""You are a professional macro/finance trader. Rate this tweet for real market-moving impact.
+    prompt = f"""You are a veteran macro hedge-fund trader (10+ years). Rate this tweet for REAL market-moving impact (1-10).
 
 Tweet: {tweet_text}
 
+Rules:
+- Downgrade hype ("trillions", "moon", "insane", excessive tags)
+- Only high score if it actually moves gold/silver/oil/TLT/SPX/DJ30/Russell/NDX/USDJPY or macro narrative
+- Be extremely strict on low-value spam
+
 Reply in EXACT JSON format with no extra text:
-{{"score": <integer 1-10>, "sentiment": "<Bullish OR Bearish OR Neutral>", "category": "<Commodities OR Macro OR Indices OR Bonds OR Forex OR Crypto OR Earnings>", "summary": "<one crisp actionable sentence, max 25 words>"}}"""
+{{"score": <integer 1-10>, "sentiment": "<Bullish OR Bearish OR Neutral>", "category": "<Commodities OR Macro OR Indices OR Bonds OR Forex OR Crypto OR Earnings>", "summary": "<one crisp actionable sentence, max 22 words>"}}"""
 
     try:
         response = groq_client.chat.completions.create(
