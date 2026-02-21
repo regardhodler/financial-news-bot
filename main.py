@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timezone, timedelta
 
 import httpx
+import yfinance as yf
 from groq import Groq
 from twscrape import API
 
@@ -79,9 +80,10 @@ MIN_IMPACT_SCORE = 6
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
 MAX_ALERTS = 7
 
-# Pre-LLM quality filters — skip low-quality tweets before burning Groq calls
-MIN_VIEWS = 2500
-MIN_FOLLOWERS = 7500
+# === QUALITY FILTERS — Early-Balanced (Feb 2026) ===
+# Tuned so we catch early macro/commodities signals from solid mid-tier accounts
+MIN_VIEWS = 1500          # lowered for earliness on TLT, oil, USDJPY, Russell etc.
+MIN_FOLLOWERS = 5000      # still skips tiny spam accounts
 
 # How many minutes back to search for tweets (5-min buffer over 15-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
@@ -92,6 +94,18 @@ GROQ_RATE_LIMIT_SLEEP = 2
 
 # Seconds to pause between Telegram sends (flood control: max 1 msg/sec)
 TELEGRAM_RATE_LIMIT_SLEEP = 1
+
+# === MARKET SNAPSHOT (live prices every run) ===
+MARKET_TICKERS = {
+    "🥇 Gold": "GC=F",
+    "🥈 Silver": "SI=F",
+    "📈 TLT (Long Bonds)": "TLT",
+    "SPY (S&P 500)": "SPY",
+    "NDX (Nasdaq 100)": "^NDX",
+    "IWM (Russell 2000)": "IWM",
+    "DIA (DJ30)": "DIA",
+    "💱 USDJPY": "USDJPY=X",
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGGING SETUP — structured output for readable GitHub Actions logs
@@ -384,6 +398,42 @@ def send_discord(message: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MARKET SNAPSHOT — live prices via yfinance
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_market_snapshot() -> str | None:
+    """
+    Fetch current prices + daily % change for MARKET_TICKERS.
+    Returns a formatted string ready to send, or None on failure.
+    """
+    lines = ["📊 *Market Snapshot*", ""]
+
+    try:
+        tickers = yf.Tickers(" ".join(MARKET_TICKERS.values()))
+        for label, symbol in MARKET_TICKERS.items():
+            try:
+                ticker = tickers.tickers[symbol]
+                info = ticker.fast_info
+                price = info.last_price
+                prev = info.previous_close
+                if price and prev and prev > 0:
+                    pct = ((price - prev) / prev) * 100
+                    arrow = "🟢" if pct >= 0 else "🔴"
+                    lines.append(f"{arrow} {label}: ${price:,.2f} ({pct:+.2f}%)")
+                else:
+                    lines.append(f"⚪ {label}: ${price:,.2f}" if price else f"⚪ {label}: N/A")
+            except Exception:
+                lines.append(f"⚪ {label}: N/A")
+
+        lines.append(f"\n🕒 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        log.warning(f"[Snapshot] Failed to fetch market data: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN ORCHESTRATION
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -392,6 +442,15 @@ async def main():
     log.info("Financial News Bot starting up")
     log.info(f"Config: MIN_IMPACT={MIN_IMPACT_SCORE} | MAX_ALERTS={MAX_ALERTS} | LOOKBACK={LOOKBACK_MINUTES}min")
     log.info("=" * 60)
+
+    # ── Step 0: Market Snapshot ──────────────────────────────────────────────
+    snapshot = get_market_snapshot()
+    if snapshot:
+        log.info("[Snapshot] Market data fetched successfully.")
+        send_telegram(snapshot)
+        send_discord(snapshot)
+    else:
+        log.info("[Snapshot] Skipped (no data available).")
 
     # ── Step 1: Validate required secrets ─────────────────────────────────────
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
