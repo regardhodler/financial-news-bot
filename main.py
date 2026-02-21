@@ -11,9 +11,77 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 
+import base64
+import hashlib
+import random
+import time as _time
+
 import httpx
 from groq import Groq
 from twscrape import API
+
+# ─────────────────────────────────────────────────────────────────────────────
+# XCLID PATCH — Fix twscrape's XClientTxId generation on GitHub Actions.
+#
+# X's API requires an "X-Client-Transaction-Id" header derived by parsing
+# x.com's JavaScript and SVG animations. GitHub Actions IPs receive stripped
+# HTML that can't be parsed, causing accounts to lock for 15 minutes per run.
+#
+# Two modes (checked in order):
+#   1. Pre-computed (recommended): set XCLID_VK_BYTES + XCLID_ANIM_KEY secrets.
+#      Generate them locally by running:  python scripts/gen_xclid.py
+#      They stay valid until x.com redeploys (usually days–weeks).
+#
+#   2. Random fallback: if secrets aren't set, a placeholder ID is sent.
+#      X may reject it with 404 (search returns no results) but the bot
+#      exits cleanly instead of hanging for 15 minutes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _setup_xclid_patch() -> None:
+    """Patch XClIdGenStore.get() before any twscrape API calls."""
+    from twscrape.xclid import XClIdGen
+    from twscrape.queue_client import XClIdGenStore
+
+    vk_bytes_env = os.getenv("XCLID_VK_BYTES", "").strip()
+    anim_key_env = os.getenv("XCLID_ANIM_KEY", "").strip()
+
+    if vk_bytes_env and anim_key_env:
+        # Use pre-computed values — no x.com page fetch needed.
+        precomputed = XClIdGen(json.loads(vk_bytes_env), anim_key_env)
+        log.info("[XClId] Using pre-computed XClientTxId (XCLID_VK_BYTES + XCLID_ANIM_KEY).")
+
+        @classmethod  # type: ignore[misc]
+        async def _get_precomputed(cls, username, fresh=False):
+            return precomputed
+
+        XClIdGenStore.get = _get_precomputed
+        return
+
+    # Fallback: wrap the original get() to catch parse failures gracefully.
+    # Instead of locking accounts for 15 minutes, we return a dummy generator
+    # that sends a random ID. X will likely respond with 404, which causes
+    # twscrape to abort the search (returns empty) rather than hanging.
+    _orig = XClIdGenStore.get
+
+    class _FallbackGen:
+        def calc(self, method: str, path: str) -> str:
+            seed = f"{method}{path}{_time.time()}{random.getrandbits(32)}"
+            return base64.b64encode(hashlib.sha256(seed.encode()).digest()).decode()[:24]
+
+    @classmethod  # type: ignore[misc]
+    async def _safe_get(cls, username, fresh=False):
+        try:
+            return await _orig(username, fresh)
+        except Exception:
+            log.warning(
+                "[XClId] Failed to parse x.com scripts — using random fallback. "
+                "Run 'python scripts/gen_xclid.py' locally and set XCLID_VK_BYTES "
+                "+ XCLID_ANIM_KEY secrets for reliable search."
+            )
+            return _FallbackGen()
+
+    XClIdGenStore.get = _safe_get
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG BLOCK — Edit these constants to customize the bot's behavior
@@ -337,7 +405,8 @@ async def main():
         log.error("GROQ_API_KEY not set. Aborting.")
         return
 
-    # ── Step 2: Login to X accounts ────────────────────────────────────────────
+    # ── Step 2: Patch XClIdGen + Login to X accounts ──────────────────────────
+    _setup_xclid_patch()
     api = API()
     accounts = await login_accounts(api)
     if accounts == 0:

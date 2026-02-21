@@ -27,6 +27,9 @@ jobs:
       X_ACCOUNT_3_PASS: ${{ secrets.X_ACCOUNT_3_PASS }}
       X_ACCOUNT_3_EMAIL: ${{ secrets.X_ACCOUNT_3_EMAIL }}
       X_ACCOUNT_3_COOKIES: ${{ secrets.X_ACCOUNT_3_COOKIES }}
+      # XClientTxId pre-computed values (generate with: python scripts/gen_xclid.py)
+      XCLID_VK_BYTES: ${{ secrets.XCLID_VK_BYTES }}
+      XCLID_ANIM_KEY: ${{ secrets.XCLID_ANIM_KEY }}
       # AI & notification credentials
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
