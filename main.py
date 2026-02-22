@@ -102,9 +102,9 @@ MAX_ALERTS = 10
 MIN_VIEWS = 500
 MIN_FOLLOWERS = 0
 
-# How many minutes back to search for tweets (5-min buffer over 15-min cron)
+# How many minutes back to search for tweets (5-min buffer over 30-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
-LOOKBACK_MINUTES = 720
+LOOKBACK_MINUTES = 35
 
 # Seconds to pause between Groq API calls (free tier: 30 req/min = 2s min gap)
 GROQ_RATE_LIMIT_SLEEP = 3
