@@ -574,14 +574,18 @@ async def main():
     log.info(f"Config: MIN_IMPACT={MIN_IMPACT_SCORE} | MAX_ALERTS={MAX_ALERTS} | LOOKBACK={LOOKBACK_MINUTES}min")
     log.info("=" * 60)
 
-    # ── Step 0: Market Snapshot ──────────────────────────────────────────────
-    snapshot = get_market_snapshot()
-    if snapshot:
-        log.info("[Snapshot] Market data fetched successfully.")
-        send_telegram(snapshot)
-        send_discord(snapshot)
+    # ── Step 0: Market Snapshot (every 4 hours only) ────────────────────────
+    current_hour = datetime.now(timezone.utc).hour
+    if current_hour % 4 == 0:
+        snapshot = get_market_snapshot()
+        if snapshot:
+            log.info("[Snapshot] Market data fetched successfully.")
+            send_telegram(snapshot)
+            send_discord(snapshot)
+        else:
+            log.info("[Snapshot] Skipped (no data available).")
     else:
-        log.info("[Snapshot] Skipped (no data available).")
+        log.info(f"[Snapshot] Skipped (next snapshot at hour {((current_hour // 4) + 1) * 4 % 24}:00 UTC).")
 
     # ── Step 1: Validate required secrets ─────────────────────────────────────
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
