@@ -503,8 +503,18 @@ def get_fear_greed() -> str | None:
     Returns a formatted string like '😱 Fear & Greed: 32 (Fear)', or None on failure.
     """
     url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+    # CNN's API returns 418 with a bare User-Agent — use a realistic browser string
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.cnn.com/markets/fear-and-greed",
+    }
     try:
-        resp = httpx.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        resp = httpx.get(url, timeout=10, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         score = round(data["fear_and_greed"]["score"])
