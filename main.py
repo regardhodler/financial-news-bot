@@ -90,18 +90,17 @@ SEARCH_QUERIES = [
 # Options: llama-3.3-70b-versatile, llama-3.1-8b-instant (faster/cheaper)
 MODEL_ID = "llama-3.3-70b-versatile"
 
-# === SWEET SPOT FOR EARLINESS (Feb 2026) ===
-# 6 = best balance now that we have MIN_VIEWS + MIN_FOLLOWERS filters
-# 5 = maximum volume (more noise), 7 = ultra-clean (less early)
-MIN_IMPACT_SCORE = 6
+# === IMPACT THRESHOLD ===
+# 5 = broad coverage (more alerts, some noise), 6 = balanced, 7 = ultra-clean
+MIN_IMPACT_SCORE = 5
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
-MAX_ALERTS = 7
+MAX_ALERTS = 10
 
-# === QUALITY FILTERS — Early-Balanced (Feb 2026) ===
-# Tuned so we catch early macro/commodities signals from solid mid-tier accounts
-MIN_VIEWS = 1500          # lowered for earliness on TLT, oil, USDJPY, Russell etc.
-MIN_FOLLOWERS = 5000      # still skips tiny spam accounts
+# === QUALITY FILTERS ===
+# Relaxed to let more tweets through — the LLM score is the main gate
+MIN_VIEWS = 500
+MIN_FOLLOWERS = 2000
 
 # How many minutes back to search for tweets (5-min buffer over 15-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
