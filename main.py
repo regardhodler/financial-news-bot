@@ -341,6 +341,66 @@ def build_alert_message(tweet: dict, score: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# NARRATIVE DETECTION — cross-tweet theme analysis via Groq
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_narratives(tweets: list[dict], groq_client: Groq) -> str | None:
+    """
+    Analyze all scraped tweets as a batch to identify dominant market-moving
+    narratives/themes. Returns a formatted narrative summary, or None on error.
+    """
+    if not tweets:
+        return None
+
+    # Concatenate all tweet texts, truncated to ~3000 chars for token limits
+    combined = ""
+    for t in tweets:
+        entry = f"@{t['author']}: {t['text']}\n---\n"
+        if len(combined) + len(entry) > 3000:
+            break
+        combined += entry
+
+    prompt = f"""You are a veteran macro hedge-fund strategist. Analyze the following batch of financial tweets and identify the dominant market-moving narratives/themes.
+
+Tweets:
+{combined}
+
+Instructions:
+- Identify 2-4 dominant narratives emerging across these tweets (e.g., AI boom, yen carry unwind, disinflation, geopolitical oil risks, rate cut expectations)
+- For each narrative, state the conviction level (High/Medium/Low) and direction (Bullish/Bearish/Mixed)
+- Quote a short phrase from one tweet as evidence for each narrative
+- Identify the single overall dominant theme
+
+Reply in this EXACT plain-text format (no markdown, no JSON):
+
+🔍 Market Narratives
+
+1. [Narrative Name] – Bullish/Bearish/Mixed – High/Medium/Low conviction
+   Evidence: "short quote from a tweet"
+   Potential market move: brief explanation of expected impact
+
+2. [Narrative Name] – Bullish/Bearish/Mixed – High/Medium/Low conviction
+   Evidence: "short quote from a tweet"
+   Potential market move: brief explanation of expected impact
+
+Overall dominant theme: one-sentence summary of the strongest narrative"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model=MODEL_ID,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=600,
+        )
+        result = response.choices[0].message.content.strip()
+        log.info(f"[Narratives] Detected narratives ({len(result)} chars)")
+        return result
+    except Exception as e:
+        log.warning(f"[Narratives] Groq API error: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TELEGRAM — send alert via Bot API
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -492,6 +552,7 @@ async def main():
     if not groq_api_key:
         log.error("GROQ_API_KEY not set. Aborting.")
         return
+    groq_client = Groq(api_key=groq_api_key)
 
     # ── Step 2: Patch XClIdGen + Login to X accounts ──────────────────────────
     _setup_xclid_patch()
@@ -509,7 +570,6 @@ async def main():
         return
 
     # ── Step 4: Score with Groq, send qualifying alerts ────────────────────────
-    groq_client = Groq(api_key=groq_api_key)
     alerts_sent = 0
     seen_ids = set()
 
@@ -554,6 +614,14 @@ async def main():
 
         # Telegram flood control
         await asyncio.sleep(TELEGRAM_RATE_LIMIT_SLEEP)
+
+    # ── Step 4b: Narrative Detection ──────────────────────────────────────────
+    if tweets:
+        await asyncio.sleep(GROQ_RATE_LIMIT_SLEEP)
+        narrative_msg = detect_narratives(tweets, groq_client)
+        if narrative_msg:
+            send_telegram(narrative_msg)
+            send_discord(narrative_msg)
 
     # ── Step 5: Summary ────────────────────────────────────────────────────────
     log.info("=" * 60)
