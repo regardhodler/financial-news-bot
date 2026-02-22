@@ -61,14 +61,14 @@ SEARCH_QUERIES = [
     '"jobs report" OR "interest rate" OR earnings OR NFP OR PPI OR GDP OR '
     'recession OR inflation OR disinflation OR stagflation OR "soft landing" OR '
     'tariff OR tariffs OR sanctions OR "trade war" OR default OR "credit risk") '
-    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+    'lang:en',
 
     # Query 2: Commodities, bonds, forex & geopolitics
     '(gold OR silver OR oil OR crude OR $GC OR $SI OR $CL OR $WTI OR '
     '$TLT OR "long bond" OR "30 year treasury" OR "long duration" OR '
     '$USDJPY OR "USD JPY" OR $DXY OR OPEC OR "oil supply" OR '
     'geopolitical OR "middle east" OR war OR "energy crisis" OR natgas) '
-    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+    'lang:en',
 
     # Query 3: Indices, tickers & sectors
     '($SPX OR "S&P 500" OR $DJI OR "Dow Jones" OR $RUT OR "Russell 2000" OR '
@@ -76,14 +76,14 @@ SEARCH_QUERIES = [
     '$NVDA OR $TSLA OR $AAPL OR $AMZN OR $GOOGL OR $MSFT OR $AMD OR $SMCI OR '
     '$META OR $NFLX OR $COIN OR $PLTR OR $ARM OR '
     '$BTC OR $ETH OR $SOL OR crypto OR bitcoin) '
-    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+    'lang:en',
 
     # Query 4: Sectors & broad sentiment
     '(layoffs OR "job cuts" OR bankruptcy OR downgrade OR upgrade OR '
     '"sector rotation" OR financials OR "real estate" OR healthcare OR '
     'energy OR semiconductor OR "AI boom" OR buyback OR guidance OR '
     '"short squeeze" OR VIX OR volatility OR selloff OR capitulation) '
-    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+    'lang:en',
 ]
 
 # Groq model to use for scoring and summarization
@@ -92,7 +92,7 @@ MODEL_ID = "llama-3.3-70b-versatile"
 
 # === IMPACT THRESHOLD ===
 # 5 = broad coverage (more alerts, some noise), 6 = balanced, 7 = ultra-clean
-MIN_IMPACT_SCORE = 5
+MIN_IMPACT_SCORE = 6
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
 MAX_ALERTS = 10
@@ -100,14 +100,17 @@ MAX_ALERTS = 10
 # === QUALITY FILTERS ===
 # Relaxed to let more tweets through — the LLM score is the main gate
 MIN_VIEWS = 500
-MIN_FOLLOWERS = 2000
+MIN_FOLLOWERS = 0
 
 # How many minutes back to search for tweets (5-min buffer over 15-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
-LOOKBACK_MINUTES = 20
+LOOKBACK_MINUTES = 720
 
 # Seconds to pause between Groq API calls (free tier: 30 req/min = 2s min gap)
-GROQ_RATE_LIMIT_SLEEP = 2
+GROQ_RATE_LIMIT_SLEEP = 3
+
+# Number of tweets to score in a single Groq batch call (reduces API usage ~10x)
+BATCH_SIZE = 10
 
 # Seconds to pause between Telegram sends (flood control: max 1 msg/sec)
 TELEGRAM_RATE_LIMIT_SLEEP = 1
@@ -236,7 +239,7 @@ async def scrape_tweets(api: API) -> list[dict]:
     for i, query in enumerate(SEARCH_QUERIES, 1):
         log.info(f"[Scrape] Running query {i}/{len(SEARCH_QUERIES)}")
         try:
-            async for tweet in api.search(query, limit=50):
+            async for tweet in api.search(query, limit=500):
                 if tweet.id in seen_ids:
                     continue
 
@@ -284,14 +287,20 @@ async def scrape_tweets(api: API) -> list[dict]:
 # GROQ SCORING — ask LLaMA to score market impact and summarize
 # ─────────────────────────────────────────────────────────────────────────────
 
-def score_and_summarize(tweet_text: str, tweet_url: str, groq_client: Groq) -> dict | None:
+def batch_score_tweets(tweets_batch: list[dict], groq_client: Groq) -> list[dict | None]:
     """
-    Send tweet text to Groq LLaMA for market-impact scoring.
-    Returns dict with 'impact', 'sentiment', 'category', 'summary', or None on error.
+    Score multiple tweets in a single Groq API call to stay within free-tier limits.
+    Returns a list of score dicts (or None for tweets that failed to parse),
+    in the same order as the input batch.
     """
-    prompt = f"""You are a veteran macro hedge-fund trader (10+ years). Rate this tweet for REAL market-moving impact (1-10).
+    # Build numbered tweet list for the prompt
+    tweet_list = ""
+    for i, t in enumerate(tweets_batch, 1):
+        tweet_list += f"[{i}] @{t['author']}: {t['text'][:300]}\n"
 
-Tweet: {tweet_text}
+    prompt = f"""You are a veteran macro hedge-fund trader (10+ years). Rate each tweet for REAL market-moving impact (1-10).
+
+{tweet_list}
 
 Rules:
 - Downgrade hype ("trillions", "moon", "insane", excessive tags)
@@ -299,33 +308,50 @@ Rules:
 - Be extremely strict on low-value spam
 
 Reply in EXACT JSON format with no extra text:
-{{"score": <integer 1-10>, "sentiment": "<Bullish OR Bearish OR Neutral>", "category": "<Commodities OR Macro OR Indices OR Bonds OR Forex OR Crypto OR Earnings>", "summary": "<one crisp actionable sentence, max 22 words>"}}"""
+{{"results": [{{"id": 1, "score": <int 1-10>, "sentiment": "<Bullish OR Bearish OR Neutral>", "category": "<Commodities OR Macro OR Indices OR Bonds OR Forex OR Crypto OR Earnings>", "summary": "<one crisp actionable sentence, max 22 words>"}}, ...]}}"""
 
     try:
         response = groq_client.chat.completions.create(
             model=MODEL_ID,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.1,  # Low temperature for consistent, factual scoring
-            max_tokens=150,
+            temperature=0.1,
+            max_tokens=200 * len(tweets_batch),
         )
         raw = response.choices[0].message.content.strip()
-        result = json.loads(raw)
+        data = json.loads(raw)
+        results_list = data.get("results", [])
 
-        impact = int(result.get("score", 0))
-        sentiment = str(result.get("sentiment", "Neutral")).strip()
-        category = str(result.get("category", "Macro")).strip()
-        summary = str(result.get("summary", "")).strip()
+        # Map results by their id (1-indexed) back to batch order
+        results_by_id = {int(r.get("id", 0)): r for r in results_list}
 
-        log.info(f"[Groq] Score: {impact}/10 | {sentiment} | {category} | {summary[:80]}...")
-        return {"impact": impact, "sentiment": sentiment, "category": category, "summary": summary}
+        scores = []
+        for i in range(1, len(tweets_batch) + 1):
+            r = results_by_id.get(i)
+            if r:
+                score = {
+                    "impact": int(r.get("score", 0)),
+                    "sentiment": str(r.get("sentiment", "Neutral")).strip(),
+                    "category": str(r.get("category", "Macro")).strip(),
+                    "summary": str(r.get("summary", "")).strip(),
+                }
+                log.info(
+                    f"[Groq] Tweet {i}: {score['impact']}/10 | "
+                    f"{score['sentiment']} | {score['category']} | {score['summary'][:60]}..."
+                )
+                scores.append(score)
+            else:
+                log.warning(f"[Groq] Tweet {i}: missing from batch response.")
+                scores.append(None)
+
+        return scores
 
     except json.JSONDecodeError as e:
-        log.warning(f"[Groq] JSON parse error: {e} | Raw: {raw[:200]}")
-        return None
+        log.warning(f"[Groq] Batch JSON parse error: {e}")
+        return [None] * len(tweets_batch)
     except Exception as e:
-        log.warning(f"[Groq] API error: {e}")
-        return None
+        log.warning(f"[Groq] Batch API error: {e}")
+        return [None] * len(tweets_batch)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -609,51 +635,53 @@ async def main():
         log.info("=" * 60)
         return
 
-    # ── Step 4: Score with Groq, send qualifying alerts ────────────────────────
+    # ── Step 4: Batch-score with Groq, send qualifying alerts ──────────────
     alerts_sent = 0
-    seen_ids = set()
+    total_batches = (len(tweets) + BATCH_SIZE - 1) // BATCH_SIZE
+    log.info(f"[Main] Scoring {len(tweets)} tweets in {total_batches} batches of {BATCH_SIZE}.")
 
-    for tweet in tweets:
+    for batch_idx in range(0, len(tweets), BATCH_SIZE):
         if alerts_sent >= MAX_ALERTS:
             log.info(f"[Main] Reached MAX_ALERTS ({MAX_ALERTS}). Stopping.")
             break
 
-        # Deduplicate (shouldn't happen, but be safe)
-        if tweet["id"] in seen_ids:
-            continue
-        seen_ids.add(tweet["id"])
-
-        log.info(f"[Main] Processing tweet {tweet['id']} by @{tweet['author']}")
+        batch = tweets[batch_idx : batch_idx + BATCH_SIZE]
+        batch_num = batch_idx // BATCH_SIZE + 1
+        log.info(f"[Main] Scoring batch {batch_num}/{total_batches} ({len(batch)} tweets)...")
 
         # Rate-limit pause before Groq call
         await asyncio.sleep(GROQ_RATE_LIMIT_SLEEP)
 
-        score = score_and_summarize(tweet["text"], tweet["url"], groq_client)
+        scores = batch_score_tweets(batch, groq_client)
 
-        if score is None:
-            log.info(f"[Main] Skipping tweet {tweet['id']} — Groq returned no result.")
-            continue
+        for tweet, score in zip(batch, scores):
+            if alerts_sent >= MAX_ALERTS:
+                break
 
-        if score["impact"] < MIN_IMPACT_SCORE:
-            log.info(
-                f"[Main] Skipping tweet {tweet['id']} — "
-                f"impact {score['impact']}/10 < threshold {MIN_IMPACT_SCORE}."
-            )
-            continue
+            if score is None:
+                log.info(f"[Main] Skipping tweet {tweet['id']} — Groq returned no result.")
+                continue
 
-        # Build and send alert
-        message = build_alert_message(tweet, score)
-        log.info(f"[Main] Sending alert for tweet {tweet['id']} (impact {score['impact']}/10)...")
+            if score["impact"] < MIN_IMPACT_SCORE:
+                log.info(
+                    f"[Main] Skipping tweet {tweet['id']} — "
+                    f"impact {score['impact']}/10 < threshold {MIN_IMPACT_SCORE}."
+                )
+                continue
 
-        tg_ok = send_telegram(message)
-        dc_ok = send_discord(message)
+            # Build and send alert
+            message = build_alert_message(tweet, score)
+            log.info(f"[Main] Sending alert for tweet {tweet['id']} (impact {score['impact']}/10)...")
 
-        if tg_ok or dc_ok:
-            alerts_sent += 1
-            log.info(f"[Main] Alert #{alerts_sent} sent (Telegram={tg_ok}, Discord={dc_ok}).")
+            tg_ok = send_telegram(message)
+            dc_ok = send_discord(message)
 
-        # Telegram flood control
-        await asyncio.sleep(TELEGRAM_RATE_LIMIT_SLEEP)
+            if tg_ok or dc_ok:
+                alerts_sent += 1
+                log.info(f"[Main] Alert #{alerts_sent} sent (Telegram={tg_ok}, Discord={dc_ok}).")
+
+            # Telegram flood control
+            await asyncio.sleep(TELEGRAM_RATE_LIMIT_SLEEP)
 
     # ── Step 4b: Narrative Detection ──────────────────────────────────────────
     if tweets:
