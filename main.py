@@ -239,7 +239,7 @@ async def scrape_tweets(api: API) -> list[dict]:
     for i, query in enumerate(SEARCH_QUERIES, 1):
         log.info(f"[Scrape] Running query {i}/{len(SEARCH_QUERIES)}")
         try:
-            async for tweet in api.search(query, limit=500):
+            async for tweet in api.search(query, limit=100):
                 if tweet.id in seen_ids:
                     continue
 

@@ -2,8 +2,8 @@ name: X Financial News Bot
 
 on:
   schedule:
-    # Runs every 15 minutes
-    - cron: '*/15 * * * *'
+    # Runs every hour
+    - cron: '0 * * * *'
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ jobs:
   run-bot:
     name: Scrape, Analyze & Alert
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     env:
       # X Account credentials (1 required, 2-3 recommended for reliability)
