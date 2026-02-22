@@ -54,19 +54,37 @@ def _setup_xclid_patch() -> None:
 # CONFIG BLOCK — Edit these constants to customize the bot's behavior
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Expanded trending macro + commodities + indices query — tuned for 15-min runs (Feb 2026)
-SEARCH_QUERY = (
-    '(earnings OR Fed OR "rate cut" OR "rate decision" OR CPI OR "jobs report" OR '
-    'FOMC OR Powell OR "interest rate" OR crash OR rally OR "bull run" OR '
-    'gold OR silver OR oil OR crude OR $GC OR $SI OR $CL OR $WTI OR '
+# Thematic search queries — split across multiple queries to bypass X's 512-char limit
+SEARCH_QUERIES = [
+    # Query 1: Macro & central banks
+    '(Fed OR FOMC OR Powell OR "rate cut" OR "rate decision" OR CPI OR '
+    '"jobs report" OR "interest rate" OR earnings OR NFP OR PPI OR GDP OR '
+    'recession OR inflation OR disinflation OR stagflation OR "soft landing" OR '
+    'tariff OR tariffs OR sanctions OR "trade war" OR default OR "credit risk") '
+    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+
+    # Query 2: Commodities, bonds, forex & geopolitics
+    '(gold OR silver OR oil OR crude OR $GC OR $SI OR $CL OR $WTI OR '
     '$TLT OR "long bond" OR "30 year treasury" OR "long duration" OR '
-    '$SPX OR "S&P 500" OR $DJI OR "Dow Jones" OR $RUT OR "Russell 2000" OR '
-    '$NDX OR "Nasdaq 100" OR $USDJPY OR "USD JPY" OR '
+    '$USDJPY OR "USD JPY" OR $DXY OR OPEC OR "oil supply" OR '
+    'geopolitical OR "middle east" OR war OR "energy crisis" OR natgas) '
+    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+
+    # Query 3: Indices, tickers & sectors
+    '($SPX OR "S&P 500" OR $DJI OR "Dow Jones" OR $RUT OR "Russell 2000" OR '
+    '$NDX OR "Nasdaq 100" OR crash OR rally OR "bull run" OR '
     '$NVDA OR $TSLA OR $AAPL OR $AMZN OR $GOOGL OR $MSFT OR $AMD OR $SMCI OR '
-    '$BTC OR $ETH OR crypto OR bitcoin) '
-    '(min_faves:60 OR min_retweets:15) '
-    'lang:en -filter:replies'
-)
+    '$META OR $NFLX OR $COIN OR $PLTR OR $ARM OR '
+    '$BTC OR $ETH OR $SOL OR crypto OR bitcoin) '
+    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+
+    # Query 4: Sectors & broad sentiment
+    '(layoffs OR "job cuts" OR bankruptcy OR downgrade OR upgrade OR '
+    '"sector rotation" OR financials OR "real estate" OR healthcare OR '
+    'energy OR semiconductor OR "AI boom" OR buyback OR guidance OR '
+    '"short squeeze" OR VIX OR volatility OR selloff OR capitulation) '
+    '(min_faves:60 OR min_retweets:15) lang:en -filter:replies',
+]
 
 # Groq model to use for scoring and summarization
 # Options: llama-3.3-70b-versatile, llama-3.1-8b-instant (faster/cheaper)
@@ -206,51 +224,60 @@ async def login_accounts(api: API) -> int:
 
 async def scrape_tweets(api: API) -> list[dict]:
     """
-    Search X using SEARCH_QUERY and return tweets from the last LOOKBACK_MINUTES.
+    Search X using SEARCH_QUERIES and return tweets from the last LOOKBACK_MINUTES.
+    Runs all thematic queries and deduplicates by tweet ID.
     Each returned dict has: id, text, url, created_at, author, likes.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=LOOKBACK_MINUTES)
     log.info(f"[Scrape] Searching tweets since {cutoff.strftime('%H:%M:%S')} UTC")
 
     tweets = []
-    try:
-        async for tweet in api.search(SEARCH_QUERY, limit=50):
-            # Filter to the lookback window
-            tweet_time = tweet.date  # twscrape returns tz-aware datetime
-            if tweet_time < cutoff:
-                continue
+    seen_ids = set()
 
-            views = tweet.viewCount or 0
-            followers = tweet.user.followersCount or 0
+    for i, query in enumerate(SEARCH_QUERIES, 1):
+        log.info(f"[Scrape] Running query {i}/{len(SEARCH_QUERIES)}")
+        try:
+            async for tweet in api.search(query, limit=50):
+                if tweet.id in seen_ids:
+                    continue
 
-            # Pre-LLM quality filter — skip low-quality tweets before Groq
-            if views < MIN_VIEWS or followers < MIN_FOLLOWERS:
+                # Filter to the lookback window
+                tweet_time = tweet.date  # twscrape returns tz-aware datetime
+                if tweet_time < cutoff:
+                    continue
+
+                views = tweet.viewCount or 0
+                followers = tweet.user.followersCount or 0
+
+                # Pre-LLM quality filter — skip low-quality tweets before Groq
+                if views < MIN_VIEWS or followers < MIN_FOLLOWERS:
+                    log.info(
+                        f"[Scrape] Skipping @{tweet.user.username} | "
+                        f"{views} views, {followers} followers (below threshold)"
+                    )
+                    continue
+
+                tweet_data = {
+                    "id": tweet.id,
+                    "text": tweet.rawContent,
+                    "url": f"https://x.com/{tweet.user.username}/status/{tweet.id}",
+                    "created_at": tweet_time,
+                    "author": tweet.user.username,
+                    "likes": tweet.likeCount,
+                    "views": views,
+                    "followers": followers,
+                }
+                tweets.append(tweet_data)
+                seen_ids.add(tweet.id)
                 log.info(
-                    f"[Scrape] Skipping @{tweet.user.username} | "
-                    f"{views} views, {followers} followers (below threshold)"
+                    f"[Scrape] Found: @{tweet.user.username} | "
+                    f"{tweet.likeCount} likes | {views} views | "
+                    f"{followers} followers | {tweet_time.strftime('%H:%M')} UTC"
                 )
-                continue
+        except Exception as e:
+            log.error(f"[Scrape] Search query {i} failed: {e}")
 
-            tweet_data = {
-                "id": tweet.id,
-                "text": tweet.rawContent,
-                "url": f"https://x.com/{tweet.user.username}/status/{tweet.id}",
-                "created_at": tweet_time,
-                "author": tweet.user.username,
-                "likes": tweet.likeCount,
-                "views": views,
-                "followers": followers,
-            }
-            tweets.append(tweet_data)
-            log.info(
-                f"[Scrape] Found: @{tweet.user.username} | "
-                f"{tweet.likeCount} likes | {views} views | "
-                f"{followers} followers | {tweet_time.strftime('%H:%M')} UTC"
-            )
-    except Exception as e:
-        log.error(f"[Scrape] Search failed: {e}")
-
-    log.info(f"[Scrape] {len(tweets)} tweet(s) in lookback window.")
+    log.info(f"[Scrape] {len(tweets)} tweet(s) total across {len(SEARCH_QUERIES)} queries.")
     return tweets
 
 
