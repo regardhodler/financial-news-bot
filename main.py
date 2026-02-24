@@ -92,19 +92,19 @@ MODEL_ID = "llama-3.3-70b-versatile"
 
 # === IMPACT THRESHOLD ===
 # 5 = broad coverage (more alerts, some noise), 6 = balanced, 7 = ultra-clean
-MIN_IMPACT_SCORE = 6
+MIN_IMPACT_SCORE = 5
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
-MAX_ALERTS = 10
+MAX_ALERTS = 20
 
 # === QUALITY FILTERS ===
 # Relaxed to let more tweets through — the LLM score is the main gate
-MIN_VIEWS = 500
+MIN_VIEWS = 200
 MIN_FOLLOWERS = 0
 
 # How many minutes back to search for tweets (5-min buffer over 30-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
-LOOKBACK_MINUTES = 35
+LOOKBACK_MINUTES = 20
 
 # Seconds to pause between Groq API calls (free tier: 30 req/min = 2s min gap)
 GROQ_RATE_LIMIT_SLEEP = 3
