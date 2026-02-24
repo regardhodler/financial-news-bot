@@ -92,7 +92,7 @@ MODEL_ID = "llama-3.3-70b-versatile"
 
 # === IMPACT THRESHOLD ===
 # 5 = broad coverage (more alerts, some noise), 6 = balanced, 7 = ultra-clean
-MIN_IMPACT_SCORE = 5
+MIN_IMPACT_SCORE = 4
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
 MAX_ALERTS = 20
@@ -239,7 +239,7 @@ async def scrape_tweets(api: API) -> list[dict]:
     for i, query in enumerate(SEARCH_QUERIES, 1):
         log.info(f"[Scrape] Running query {i}/{len(SEARCH_QUERIES)}")
         try:
-            async for tweet in api.search(query, limit=100):
+            async for tweet in api.search(query, limit=200):
                 if tweet.id in seen_ids:
                     continue
 
