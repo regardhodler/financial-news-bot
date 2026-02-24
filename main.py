@@ -396,7 +396,7 @@ def build_alert_message(tweet: dict, score: dict) -> str:
 # NARRATIVE DETECTION — cross-tweet theme analysis via Groq
 # ─────────────────────────────────────────────────────────────────────────────
 
-def detect_narratives(tweets: list[dict], groq_client: Groq) -> str | None:
+def detect_narratives(tweets: list[dict], groq_client: Groq, market_snapshot: str | None = None) -> str | None:
     """
     Analyze all scraped tweets as a batch to identify dominant market-moving
     narratives/themes. Returns a formatted narrative summary, or None on error.
@@ -404,24 +404,40 @@ def detect_narratives(tweets: list[dict], groq_client: Groq) -> str | None:
     if not tweets:
         return None
 
-    # Concatenate all tweet texts, truncated to ~3000 chars for token limits
+    # Concatenate all tweet texts with URLs and engagement metrics, truncated to ~8000 chars
     combined = ""
     for t in tweets:
-        entry = f"@{t['author']}: {t['text']}\n---\n"
-        if len(combined) + len(entry) > 3000:
+        url = t.get("url", f"https://x.com/{t['author']}/status/{t.get('id', '')}")
+        likes = t.get("likes", 0)
+        views = t.get("views", 0)
+        followers = t.get("followers", 0)
+        entry = f"@{t['author']} ({url}) [likes:{likes} views:{views} followers:{followers}]: {t['text']}\n---\n"
+        if len(combined) + len(entry) > 8000:
             break
         combined += entry
 
-    prompt = f"""You are a veteran macro hedge-fund strategist. Analyze the following batch of financial tweets and identify the dominant market-moving narratives/themes.
+    market_context = ""
+    if market_snapshot:
+        market_context = f"""
+Current Market Data (for reference — correlate with tweet narratives):
+{market_snapshot}
+"""
 
+    prompt = f"""You are a veteran macro hedge-fund strategist. Analyze the following batch of financial tweets and identify the dominant market-moving narratives/themes.
+{market_context}
 Tweets:
 {combined}
 
 Instructions:
 - Identify 2-4 dominant narratives emerging across these tweets (e.g., AI boom, yen carry unwind, disinflation, geopolitical oil risks, rate cut expectations)
 - For each narrative, state the conviction level (High/Medium/Low) and direction (Bullish/Bearish/Mixed)
+- Weight tweets by engagement (likes, views) and author influence (followers) when assessing conviction
 - Quote a short phrase from one tweet as evidence for each narrative
+- Cite the source tweet author and URL for each piece of evidence
+- Suggest one actionable trade idea per narrative (specific ticker + direction, e.g. "Long GLD", "Short TLT")
+- If market data is provided, reference actual price moves that confirm or contradict the narrative
 - Identify the single overall dominant theme
+- Provide a sector heatmap and an overall sentiment score
 
 Reply in this EXACT plain-text format (no markdown, no JSON):
 
@@ -429,20 +445,30 @@ Reply in this EXACT plain-text format (no markdown, no JSON):
 
 1. [Narrative Name] – Bullish/Bearish/Mixed – High/Medium/Low conviction
    Evidence: "short quote from a tweet"
+   Source: @author — <tweet URL>
+   Trade idea: Long/Short TICKER — brief rationale
    Potential market move: brief explanation of expected impact
 
 2. [Narrative Name] – Bullish/Bearish/Mixed – High/Medium/Low conviction
    Evidence: "short quote from a tweet"
+   Source: @author — <tweet URL>
+   Trade idea: Long/Short TICKER — brief rationale
    Potential market move: brief explanation of expected impact
 
-Overall dominant theme: one-sentence summary of the strongest narrative"""
+📊 Sector Heatmap
+🟢 Bullish: sector1, sector2
+🔴 Bearish: sector3
+⚪ Neutral: sector4
+
+🎯 Overall dominant theme: one-sentence summary of the strongest narrative
+📈 Tweet Sentiment Score: X/10 (1=extreme fear, 10=extreme greed)"""
 
     try:
         response = groq_client.chat.completions.create(
             model=MODEL_ID,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=600,
+            max_tokens=1200,
         )
         result = response.choices[0].message.content.strip()
         log.info(f"[Narratives] Detected narratives ({len(result)} chars)")
@@ -566,9 +592,13 @@ def get_market_snapshot() -> str | None:
                 ticker = tickers.tickers[symbol]
                 info = ticker.fast_info
                 price = info.last_price
-                prev = info.previous_close
-                if price and prev and prev > 0:
-                    pct = ((price - prev) / prev) * 100
+
+                # Get today's open price for open-to-current % change
+                hist = ticker.history(period="1d")
+                open_price = hist["Open"].iloc[-1] if not hist.empty else None
+
+                if price and open_price and open_price > 0:
+                    pct = ((price - open_price) / open_price) * 100
                     arrow = "🟢" if pct >= 0 else "🔴"
                     lines.append(f"{arrow} {label}: ${price:,.2f} ({pct:+.2f}%)")
                 else:
@@ -601,6 +631,7 @@ async def main():
     log.info("=" * 60)
 
     # ── Step 0: Market Snapshot (every 4 hours only) ────────────────────────
+    snapshot = None
     current_hour = datetime.now(timezone.utc).hour
     if current_hour % 4 == 0:
         snapshot = get_market_snapshot()
@@ -686,7 +717,7 @@ async def main():
     # ── Step 4b: Narrative Detection ──────────────────────────────────────────
     if tweets:
         await asyncio.sleep(GROQ_RATE_LIMIT_SLEEP)
-        narrative_msg = detect_narratives(tweets, groq_client)
+        narrative_msg = detect_narratives(tweets, groq_client, market_snapshot=snapshot)
         if narrative_msg:
             send_telegram(narrative_msg)
             send_discord(narrative_msg)
