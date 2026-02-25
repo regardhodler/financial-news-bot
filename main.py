@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -287,7 +288,7 @@ async def scrape_tweets(api: API) -> list[dict]:
 # GROQ SCORING — ask LLaMA to score market impact and summarize
 # ─────────────────────────────────────────────────────────────────────────────
 
-def batch_score_tweets(tweets_batch: list[dict], groq_client: Groq) -> list[dict | None]:
+def batch_score_tweets(tweets_batch: list[dict], groq_client: Groq, finviz_context: str | None = None) -> list[dict | None]:
     """
     Score multiple tweets in a single Groq API call to stay within free-tier limits.
     Returns a list of score dicts (or None for tweets that failed to parse),
@@ -298,14 +299,24 @@ def batch_score_tweets(tweets_batch: list[dict], groq_client: Groq) -> list[dict
     for i, t in enumerate(tweets_batch, 1):
         tweet_list += f"[{i}] @{t['author']}: {t['text'][:300]}\n"
 
-    prompt = f"""You are a veteran macro hedge-fund trader (10+ years). Rate each tweet for REAL market-moving impact (1-10).
+    finviz_block = ""
+    if finviz_context:
+        finviz_block = f"""
+Live Market Signals (from FinViz — use to cross-validate tweet claims):
+{finviz_context}
 
+"""
+
+    prompt = f"""You are a veteran macro hedge-fund trader (10+ years). Rate each tweet for REAL market-moving impact (1-10).
+{finviz_block}
 {tweet_list}
 
 Rules:
 - Downgrade hype ("trillions", "moon", "insane", excessive tags)
 - Only high score if it actually moves gold/silver/oil/TLT/SPX/DJ30/Russell/NDX/USDJPY or macro narrative
 - Be extremely strict on low-value spam
+- If a tweet mentions a ticker that appears in the FinViz signals (unusual volume, top gainer/loser), increase its score by 1-2 points
+- If a tweet makes a claim contradicted by actual market data, decrease its score
 
 Reply in EXACT JSON format with no extra text:
 {{"results": [{{"id": 1, "score": <int 1-10>, "sentiment": "<Bullish OR Bearish OR Neutral>", "category": "<Commodities OR Macro OR Indices OR Bonds OR Forex OR Crypto OR Earnings>", "summary": "<one crisp actionable sentence, max 22 words>"}}, ...]}}"""
@@ -396,7 +407,7 @@ def build_alert_message(tweet: dict, score: dict) -> str:
 # NARRATIVE DETECTION — cross-tweet theme analysis via Groq
 # ─────────────────────────────────────────────────────────────────────────────
 
-def detect_narratives(tweets: list[dict], groq_client: Groq, market_snapshot: str | None = None) -> str | None:
+def detect_narratives(tweets: list[dict], groq_client: Groq, market_snapshot: str | None = None, finviz_context: str | None = None) -> str | None:
     """
     Analyze all scraped tweets as a batch to identify dominant market-moving
     narratives/themes. Returns a formatted narrative summary, or None on error.
@@ -423,8 +434,15 @@ Current Market Data (for reference — correlate with tweet narratives):
 {market_snapshot}
 """
 
+    finviz_block = ""
+    if finviz_context:
+        finviz_block = f"""
+Live FinViz Signals (use real sector data below instead of guessing sector performance):
+{finviz_context}
+"""
+
     prompt = f"""You are a veteran macro hedge-fund strategist. Analyze the following batch of financial tweets and identify the dominant market-moving narratives/themes.
-{market_context}
+{market_context}{finviz_block}
 Tweets:
 {combined}
 
@@ -437,7 +455,7 @@ Instructions:
 - Suggest one actionable trade idea per narrative (specific ticker + direction, e.g. "Long GLD", "Short TLT")
 - If market data is provided, reference actual price moves that confirm or contradict the narrative
 - Identify the single overall dominant theme
-- Provide a sector heatmap and an overall sentiment score
+- Provide a sector heatmap (use real FinViz sector % data if available, otherwise estimate from tweets) and an overall sentiment score
 
 Reply in this EXACT plain-text format (no markdown, no JSON):
 
@@ -621,6 +639,107 @@ def get_market_snapshot() -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FINVIZ SIGNALS — cross-validate tweet claims against real market activity
+# ─────────────────────────────────────────────────────────────────────────────
+
+def scrape_finviz_signals() -> dict | None:
+    """
+    Scrape FinViz for sector performance, top gainers, and unusual volume.
+    Returns a dict with formatted strings for prompt injection, or None on failure.
+    """
+    try:
+        from finvizfinance.group.performance import Performance
+        from finvizfinance.screener.overview import Overview
+
+        # 1. Sector performance
+        perf = Performance()
+        perf_df = perf.screener_view()
+        sectors_str = ""
+        if perf_df is not None and not perf_df.empty:
+            parts = []
+            for _, row in perf_df.iterrows():
+                name = row.get("Name", "")
+                pct = row.get("Perf Day", row.get("Change", ""))
+                if name and pct:
+                    # Format percentage — may already be a string like "1.23%"
+                    if isinstance(pct, (int, float)):
+                        pct = f"{pct:+.2f}%"
+                    parts.append(f"{name} {pct}")
+            sectors_str = ", ".join(parts)
+            log.info(f"[FinViz] Sector performance: {sectors_str[:120]}...")
+
+        time.sleep(1)
+
+        # 2. Top gainers
+        gainers_screener = Overview()
+        gainers_screener.set_filter(signal="Top Gainers")
+        gainers_df = gainers_screener.screener_view(limit=10)
+        gainers_str = ""
+        if gainers_df is not None and not gainers_df.empty:
+            parts = []
+            for _, row in gainers_df.iterrows():
+                ticker = row.get("Ticker", "")
+                change = row.get("Change", "")
+                if ticker:
+                    if isinstance(change, (int, float)):
+                        change = f"{change:+.2f}%"
+                    parts.append(f"${ticker} {change}")
+            gainers_str = ", ".join(parts)
+            log.info(f"[FinViz] Top gainers: {gainers_str[:120]}...")
+
+        time.sleep(1)
+
+        # 3. Unusual volume
+        vol_screener = Overview()
+        vol_screener.set_filter(signal="Unusual Volume")
+        vol_df = vol_screener.screener_view(limit=10)
+        vol_str = ""
+        if vol_df is not None and not vol_df.empty:
+            parts = []
+            for _, row in vol_df.iterrows():
+                ticker = row.get("Ticker", "")
+                volume = row.get("Volume", "")
+                change = row.get("Change", "")
+                if ticker:
+                    vol_info = f"${ticker}"
+                    if change:
+                        if isinstance(change, (int, float)):
+                            change = f"{change:+.2f}%"
+                        vol_info += f" {change}"
+                    if volume:
+                        vol_info += f" (vol: {volume})"
+                    parts.append(vol_info)
+            vol_str = ", ".join(parts)
+            log.info(f"[FinViz] Unusual volume: {vol_str[:120]}...")
+
+        # Build the context block for Groq prompt injection
+        context_parts = []
+        if sectors_str:
+            context_parts.append(f"Sector Performance (today): {sectors_str}")
+        if gainers_str:
+            context_parts.append(f"Top Gainers: {gainers_str}")
+        if vol_str:
+            context_parts.append(f"Unusual Volume: {vol_str}")
+
+        if not context_parts:
+            log.warning("[FinViz] All FinViz queries returned empty data.")
+            return None
+
+        context_block = "\n".join(context_parts)
+
+        return {
+            "sectors": sectors_str,
+            "gainers": gainers_str,
+            "unusual_volume": vol_str,
+            "context_block": context_block,
+        }
+
+    except Exception as e:
+        log.warning(f"[FinViz] Failed to scrape FinViz signals (non-fatal): {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN ORCHESTRATION
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -643,6 +762,17 @@ async def main():
             log.info("[Snapshot] Skipped (no data available).")
     else:
         log.info(f"[Snapshot] Skipped (next snapshot at hour {((current_hour // 4) + 1) * 4 % 24}:00 UTC).")
+
+    # ── Step 0b: FinViz Signals (hourly only to avoid rate limiting) ────────
+    finviz_data = None
+    current_minute = datetime.now(timezone.utc).minute
+    if current_minute < 15:  # Only on the first run of each hour
+        finviz_data = scrape_finviz_signals()
+    finviz_context = finviz_data["context_block"] if finviz_data else None
+    if finviz_context:
+        log.info(f"[FinViz] Context block ready ({len(finviz_context)} chars).")
+    else:
+        log.info("[FinViz] No FinViz data available — scoring will proceed without cross-validation.")
 
     # ── Step 1: Validate required secrets ─────────────────────────────────────
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
@@ -683,7 +813,7 @@ async def main():
         # Rate-limit pause before Groq call
         await asyncio.sleep(GROQ_RATE_LIMIT_SLEEP)
 
-        scores = batch_score_tweets(batch, groq_client)
+        scores = batch_score_tweets(batch, groq_client, finviz_context=finviz_context)
 
         for tweet, score in zip(batch, scores):
             if alerts_sent >= MAX_ALERTS:
@@ -717,7 +847,7 @@ async def main():
     # ── Step 4b: Narrative Detection ──────────────────────────────────────────
     if tweets:
         await asyncio.sleep(GROQ_RATE_LIMIT_SLEEP)
-        narrative_msg = detect_narratives(tweets, groq_client, market_snapshot=snapshot)
+        narrative_msg = detect_narratives(tweets, groq_client, market_snapshot=snapshot, finviz_context=finviz_context)
         if narrative_msg:
             send_telegram(narrative_msg)
             send_discord(narrative_msg)
