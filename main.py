@@ -93,10 +93,10 @@ MODEL_ID = "llama-3.3-70b-versatile"
 
 # === IMPACT THRESHOLD ===
 # 5 = broad coverage (more alerts, some noise), 6 = balanced, 7 = ultra-clean
-MIN_IMPACT_SCORE = 4
+MIN_IMPACT_SCORE = 7
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
-MAX_ALERTS = 20
+MAX_ALERTS = 5
 
 # === QUALITY FILTERS ===
 # Relaxed to let more tweets through — the LLM score is the main gate
