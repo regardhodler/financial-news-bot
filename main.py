@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -92,8 +93,8 @@ SEARCH_QUERIES = [
 MODEL_ID = "llama-3.3-70b-versatile"
 
 # === IMPACT THRESHOLD ===
-# 5 = broad coverage (more alerts, some noise), 6 = balanced, 7 = ultra-clean
-MIN_IMPACT_SCORE = 7
+# 5 = broad coverage (more alerts, some noise), 6 = balanced, 7 = strict, 8 = ultra-clean
+MIN_IMPACT_SCORE = 8
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
 MAX_ALERTS = 5
@@ -117,25 +118,43 @@ BATCH_SIZE = 10
 TELEGRAM_RATE_LIMIT_SLEEP = 1
 
 # === MARKET SNAPSHOT (live prices every run) ===
-MARKET_TICKERS = {
-    "🥇 Gold": "GC=F",
-    "🥈 Silver": "SI=F",
-    "📈 TLT (Long Bonds)": "TLT",
-    "SPY (S&P 500)": "SPY",
-    "NDX (Nasdaq 100)": "^NDX",
-    "IWM (Russell 2000)": "IWM",
-    "DIA (DJ30)": "DIA",
-    "😱 VIX": "^VIX",
-    "💵 DXY": "DX-Y.NYB",
-    "🛢 WTI Crude": "CL=F",
-    "🇨🇳 China (CSI 300)": "000300.SS",
-    "🇯🇵 Japan (Nikkei 225)": "^N225",
-    "🇮🇳 India (Nifty 50)": "^NSEI",
-    "💱 USDJPY": "USDJPY=X",
-    "₿ BTC": "BTC-USD",
-    "⟠ ETH": "ETH-USD",
-    "✕ XRP": "XRP-USD",
-}
+# Grouped by category for cleaner display
+MARKET_TICKER_GROUPS = OrderedDict({
+    "📈 Indices": {
+        "SPY (S&P 500)": "SPY",
+        "NDX (Nasdaq 100)": "^NDX",
+        "IWM (Russell 2000)": "IWM",
+        "DIA (DJ30)": "DIA",
+    },
+    "🪙 Commodities": {
+        "🥇 Gold": "GC=F",
+        "🥈 Silver": "SI=F",
+        "🛢 WTI Crude": "CL=F",
+    },
+    "📊 Bonds & Forex": {
+        "📈 TLT (Long Bonds)": "TLT",
+        "💵 DXY": "DX-Y.NYB",
+        "💱 USDJPY": "USDJPY=X",
+    },
+    "🌍 International": {
+        "🇨🇳 China (CSI 300)": "000300.SS",
+        "🇯🇵 Japan (Nikkei 225)": "^N225",
+        "🇮🇳 India (Nifty 50)": "^NSEI",
+    },
+    "🪙 Crypto": {
+        "₿ BTC": "BTC-USD",
+        "⟠ ETH": "ETH-USD",
+        "✕ XRP": "XRP-USD",
+    },
+    "😱 Volatility": {
+        "😱 VIX": "^VIX",
+    },
+})
+
+# Flat dict for backward compatibility (used by yfinance bulk fetch)
+MARKET_TICKERS = {}
+for _group_tickers in MARKET_TICKER_GROUPS.values():
+    MARKET_TICKERS.update(_group_tickers)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGGING SETUP — structured output for readable GitHub Actions logs
@@ -390,8 +409,12 @@ def build_alert_message(tweet: dict, score: dict) -> str:
     tags = " ".join(dict.fromkeys(cashtags + hashtags))[:100]  # dedupe, limit length
     tags_line = f"📊 {tags}" if tags else ""
 
+    sep = "━━━━━━━━━━━━━━━━━━━━"
+
     lines = [
+        sep,
         f"🚨 [IMPACT {impact}/10] {sent_emoji} {sentiment} | {category}",
+        "",
         f"{summary}",
         "",
         f"🔗 {url}",
@@ -399,6 +422,7 @@ def build_alert_message(tweet: dict, score: dict) -> str:
     ]
     if tags_line:
         lines.append(tags_line)
+    lines.append(sep)
 
     return "\n".join(lines)
 
@@ -447,12 +471,11 @@ Tweets:
 {combined}
 
 Instructions:
-- Identify 2-4 dominant narratives emerging across these tweets (e.g., AI boom, yen carry unwind, disinflation, geopolitical oil risks, rate cut expectations)
+- Identify 2-3 dominant narratives emerging across these tweets (e.g., AI boom, yen carry unwind, disinflation, geopolitical oil risks, rate cut expectations)
 - For each narrative, state the conviction level (High/Medium/Low) and direction (Bullish/Bearish/Mixed)
 - Weight tweets by engagement (likes, views) and author influence (followers) when assessing conviction
 - Quote a short phrase from one tweet as evidence for each narrative
 - Cite the source tweet author and URL for each piece of evidence
-- Suggest one actionable trade idea per narrative (specific ticker + direction, e.g. "Long GLD", "Short TLT")
 - If market data is provided, reference actual price moves that confirm or contradict the narrative
 - Identify the single overall dominant theme
 - Provide a sector heatmap (use real FinViz sector % data if available, otherwise estimate from tweets) and an overall sentiment score
@@ -464,14 +487,10 @@ Reply in this EXACT plain-text format (no markdown, no JSON):
 1. [Narrative Name] – Bullish/Bearish/Mixed – High/Medium/Low conviction
    Evidence: "short quote from a tweet"
    Source: @author — <tweet URL>
-   Trade idea: Long/Short TICKER — brief rationale
-   Potential market move: brief explanation of expected impact
 
 2. [Narrative Name] – Bullish/Bearish/Mixed – High/Medium/Low conviction
    Evidence: "short quote from a tweet"
    Source: @author — <tweet URL>
-   Trade idea: Long/Short TICKER — brief rationale
-   Potential market move: brief explanation of expected impact
 
 📊 Sector Heatmap
 🟢 Bullish: sector1, sector2
@@ -486,7 +505,7 @@ Reply in this EXACT plain-text format (no markdown, no JSON):
             model=MODEL_ID,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=1200,
+            max_tokens=800,
         )
         result = response.choices[0].message.content.strip()
         log.info(f"[Narratives] Detected narratives ({len(result)} chars)")
@@ -598,31 +617,37 @@ def get_fear_greed() -> str | None:
 
 def get_market_snapshot() -> str | None:
     """
-    Fetch current prices + daily % change for MARKET_TICKERS.
+    Fetch current prices + daily % change for MARKET_TICKERS, grouped by category.
     Returns a formatted string ready to send, or None on failure.
     """
-    lines = ["📊 *Market Snapshot*", ""]
+    lines = ["📊 *Market Snapshot*"]
+    sep = "───────────────────"
 
     try:
         tickers = yf.Tickers(" ".join(MARKET_TICKERS.values()))
-        for label, symbol in MARKET_TICKERS.items():
-            try:
-                ticker = tickers.tickers[symbol]
-                info = ticker.fast_info
-                price = info.last_price
 
-                # Get today's open price for open-to-current % change
-                hist = ticker.history(period="1d")
-                open_price = hist["Open"].iloc[-1] if not hist.empty else None
+        for group_name, group_tickers in MARKET_TICKER_GROUPS.items():
+            lines.append("")
+            lines.append(f"*{group_name}*")
+            lines.append(sep)
+            for label, symbol in group_tickers.items():
+                try:
+                    ticker = tickers.tickers[symbol]
+                    info = ticker.fast_info
+                    price = info.last_price
 
-                if price and open_price and open_price > 0:
-                    pct = ((price - open_price) / open_price) * 100
-                    arrow = "🟢" if pct >= 0 else "🔴"
-                    lines.append(f"{arrow} {label}: ${price:,.2f} ({pct:+.2f}%)")
-                else:
-                    lines.append(f"⚪ {label}: ${price:,.2f}" if price else f"⚪ {label}: N/A")
-            except Exception:
-                lines.append(f"⚪ {label}: N/A")
+                    # Get today's open price for open-to-current % change
+                    hist = ticker.history(period="1d")
+                    open_price = hist["Open"].iloc[-1] if not hist.empty else None
+
+                    if price and open_price and open_price > 0:
+                        pct = ((price - open_price) / open_price) * 100
+                        arrow = "🟢" if pct >= 0 else "🔴"
+                        lines.append(f"{arrow} {label}: ${price:,.2f} ({pct:+.2f}%)")
+                    else:
+                        lines.append(f"⚪ {label}: ${price:,.2f}" if price else f"⚪ {label}: N/A")
+                except Exception:
+                    lines.append(f"⚪ {label}: N/A")
 
         # Append Fear & Greed Index
         fg_line = get_fear_greed()
