@@ -100,7 +100,35 @@ def _setup_xclid_patch() -> None:
         log.error("[XClId] All strategies failed — x.com page format unrecognised.")
 
     _xclid.get_scripts_list = _patched_get_scripts_list
-    log.info("[XClId] Patched get_scripts_list() with 4-strategy fallback chain.")
+
+    # Also patch parse_anim_idx — it filters scripts for "/ondemand.s." which may
+    # not appear in the URLs returned by our fallback strategies. Instead, try ALL
+    # scripts and return indices from the first one that contains them.
+    async def _patched_parse_anim_idx(text: str) -> list[int]:
+        scripts = list(_xclid.get_scripts_list(text))
+        if not scripts:
+            raise Exception("Couldn't get XClientTxId scripts")
+
+        # Prefer ondemand.s. scripts (original behavior), then fall back to others
+        ordered = (
+            [s for s in scripts if "/ondemand.s." in s]
+            + [s for s in scripts if "/ondemand.s." not in s]
+        )
+
+        for url in ordered[:10]:
+            try:
+                js_text = await _xclid.get_tw_page_text(url)
+                items = [int(m.group(2)) for m in _xclid.INDICES_REGEX.finditer(js_text)]
+                if items:
+                    log.info(f"[XClId] Found animation indices in {url.split('/')[-1]}")
+                    return items
+            except Exception:
+                continue
+
+        raise Exception("Couldn't get XClientTxId indices from any available script")
+
+    _xclid.parse_anim_idx = _patched_parse_anim_idx
+    log.info("[XClId] Patched get_scripts_list() + parse_anim_idx() with fallback chain.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
