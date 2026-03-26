@@ -35,8 +35,8 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      GITHUB_GIST_TOKEN: ${{ secrets.GITHUB_GIST_TOKEN }}
-      GITHUB_GIST_ID: ${{ secrets.GITHUB_GIST_ID }}
+      GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+      GIST_ID: ${{ secrets.GIST_ID }}
 
     steps:
       - name: Checkout repository
