@@ -875,6 +875,30 @@ _POLYMARKET_SLUGS = [
 _POLYMARKET_TAG_IDS = [104291, 101958]
 
 
+def _polymarket_url(m: dict, fallback_slug: str = "") -> str:
+    """Extract the correct Polymarket event URL from a market object.
+    Market slugs have numeric suffixes (-484 etc) that 404 on polymarket.com/event/.
+    The events[0].slug is the canonical event URL slug."""
+    events = m.get("events") or []
+    if events and isinstance(events[0], dict):
+        event_slug = events[0].get("slug", "")
+        if event_slug:
+            return f"https://polymarket.com/event/{event_slug}"
+    # Fallback: strip trailing -NNN suffix from market slug
+    slug = m.get("slug") or fallback_slug
+    import re
+    clean = re.sub(r"-\d+$", "", slug)
+    return f"https://polymarket.com/event/{clean}"
+
+
+def _polymarket_prob(m: dict) -> float | None:
+    try:
+        prices = json.loads(m.get("outcomePrices", "[]"))
+        return float(prices[0]) if prices else None
+    except Exception:
+        return None
+
+
 def fetch_polymarket_markets() -> list[dict]:
     """
     Fetch macro prediction market probabilities from Polymarket's public gamma API.
@@ -898,17 +922,12 @@ def fetch_polymarket_markets() -> list[dict]:
             if not markets:
                 continue
             m = markets[0]
-            # outcomePrices is a JSON string like '["0.72", "0.28"]'
-            try:
-                prices = json.loads(m.get("outcomePrices", "[]"))
-                prob = float(prices[0]) if prices else None
-            except Exception:
-                prob = None
+            prob = _polymarket_prob(m)
             results.append({
                 "question": m.get("question", slug),
                 "probability": prob,
                 "volume": m.get("volume", 0),
-                "url": f"https://polymarket.com/event/{slug}",
+                "url": _polymarket_url(m, slug),
             })
             log.info(f"[Polymarket] {m.get('question', slug)[:60]} → {prob:.0%}" if prob else f"[Polymarket] {slug} → no prob")
         except Exception as e:
@@ -929,19 +948,14 @@ def fetch_polymarket_markets() -> list[dict]:
             if not markets:
                 continue
             m = markets[0]
-            slug = m.get("slug", "")
-            try:
-                prices = json.loads(m.get("outcomePrices", "[]"))
-                prob = float(prices[0]) if prices else None
-            except Exception:
-                prob = None
+            prob = _polymarket_prob(m)
             results.append({
-                "question": m.get("question", slug),
+                "question": m.get("question", ""),
                 "probability": prob,
                 "volume": m.get("volume", 0),
-                "url": f"https://polymarket.com/event/{slug}",
+                "url": _polymarket_url(m),
             })
-            log.info(f"[Polymarket/tag={tag_id}] {m.get('question', slug)[:60]} → {prob:.0%}" if prob else f"[Polymarket/tag={tag_id}] {slug} → no prob")
+            log.info(f"[Polymarket/tag={tag_id}] {m.get('question', '')[:60]} → {prob:.0%}" if prob else f"[Polymarket/tag={tag_id}] no prob")
         except Exception as e:
             log.warning(f"[Polymarket] Failed to fetch tag {tag_id}: {e}")
 
