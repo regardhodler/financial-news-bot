@@ -932,11 +932,11 @@ def write_to_gist(
 
     Returns True on success.
     """
-    token = os.getenv("GITHUB_GIST_TOKEN", "").strip()
-    gist_id = os.getenv("GITHUB_GIST_ID", "").strip()
+    token = (os.getenv("GIST_TOKEN") or os.getenv("GITHUB_GIST_TOKEN") or "").strip()
+    gist_id = (os.getenv("GIST_ID") or os.getenv("GITHUB_GIST_ID") or "").strip()
 
     if not token or not gist_id:
-        log.warning("[Gist] Skipping — GITHUB_GIST_TOKEN or GITHUB_GIST_ID not set.")
+        log.warning("[Gist] Skipping — GIST_TOKEN or GIST_ID not set.")
         return False
 
     payload = {
