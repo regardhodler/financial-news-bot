@@ -32,24 +32,75 @@ from twscrape import API
 
 def _setup_xclid_patch() -> None:
     """
-    Patch twscrape's get_scripts_list() to handle x.com's JS object literal
-    chunk map (unquoted keys) that broke json.loads() in twscrape 0.17.0.
+    Patch twscrape's get_scripts_list() to handle x.com's frequently-changing
+    webpack bundle format.
+
+    Tries three strategies in order:
+      1. Original pattern (e=>e+"."+) — webpack 4 style
+      2. Newer webpack 5 / x.com style: {map}[e]||e  variants
+      3. Direct regex scan for ondemand.s.* URLs in the page text (no chunk map needed)
     """
     import twscrape.xclid as _xclid
 
-    def _patched_get_scripts_list(text: str):
-        try:
-            chunk = text.split('e=>e+"."+')[1].split('[e]+"a.js"')[0]
-        except (IndexError, Exception):
-            return  # Pattern not found — page format unrecognised, skip silently
+    _HASH_PAT = re.compile(r'"?([^":\s{},\[\]]+)"?\s*:\s*"([a-f0-9]{5,10})"')
 
-        # x.com's chunk map contains a mix of quoted ("key") and unquoted (key)
-        # JS identifiers. json.loads() rejects unquoted keys, so we use regex.
-        for key, val in re.findall(r'"?([^":\s{},]+)"?\s*:\s*"([a-f0-9]{5,10})"', chunk):
+    def _extract_from_chunk(chunk_text: str):
+        for key, val in _HASH_PAT.findall(chunk_text):
             yield _xclid.script_url(key, f"{val}a")
 
+    def _patched_get_scripts_list(text: str):
+        # Strategy 1: original webpack 4 pattern (e=>e+"."+{...}[e]+"a.js")
+        if 'e=>e+"."+' in text and '[e]+"a.js"' in text:
+            try:
+                chunk = text.split('e=>e+"."+')[1].split('[e]+"a.js"')[0]
+                results = list(_extract_from_chunk(chunk))
+                if results:
+                    log.info("[XClId] Strategy 1 (webpack4 chunk map) matched.")
+                    yield from results
+                    return
+            except Exception:
+                pass
+
+        # Strategy 2: webpack 5 / newer x.com — {map}[e]||e or e=>({...}[e]||e)
+        for marker_start, marker_end in [
+            (r'\{[^{}]{40,}\}\[e\]\|\|e', None),
+            (r'chunksById', None),
+        ]:
+            try:
+                m = re.search(r'\{([^{}]{40,})\}\[e\]', text)
+                if m:
+                    results = list(_extract_from_chunk(m.group(1)))
+                    if results:
+                        log.info("[XClId] Strategy 2 (webpack5 chunk map) matched.")
+                        yield from results
+                        return
+            except Exception:
+                pass
+
+        # Strategy 3: direct URL scan — find ondemand.s.* script URLs in the page
+        direct = re.findall(
+            r'https://abs\.twimg\.com/responsive-web/client-web/ondemand\.s\.[a-f0-9a-z]+\.js',
+            text,
+        )
+        if direct:
+            log.info(f"[XClId] Strategy 3 (direct URL scan) matched {len(direct)} URLs.")
+            yield from dict.fromkeys(direct)  # deduplicate, preserve order
+            return
+
+        # Strategy 4: scan all abs.twimg.com client-web JS chunks
+        all_chunks = re.findall(
+            r'https://abs\.twimg\.com/responsive-web/client-web/[a-zA-Z0-9._/-]+\.js',
+            text,
+        )
+        if all_chunks:
+            log.warning(f"[XClId] Strategy 4 (all chunks fallback): yielding {len(all_chunks)} URLs.")
+            yield from dict.fromkeys(all_chunks)
+            return
+
+        log.error("[XClId] All strategies failed — x.com page format unrecognised.")
+
     _xclid.get_scripts_list = _patched_get_scripts_list
-    log.info("[XClId] Patched get_scripts_list() for JS object literal chunk maps.")
+    log.info("[XClId] Patched get_scripts_list() with 4-strategy fallback chain.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -765,6 +816,147 @@ def scrape_finviz_signals() -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# POLYMARKET — fetch macro prediction market probabilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Slugs for macro-relevant Polymarket markets (free public API, no auth)
+_POLYMARKET_SLUGS = [
+    "will-the-fed-cut-rates-in-2025",
+    "us-recession-2025",
+    "will-cpi-exceed-3-in-2025",
+    "will-trump-impose-additional-tariffs-on-china-in-2025",
+    "will-us-gdp-growth-exceed-2-in-2025",
+]
+
+
+def fetch_polymarket_markets() -> list[dict]:
+    """
+    Fetch macro prediction market probabilities from Polymarket's public gamma API.
+    Returns list of {question, probability, volume, url} dicts, or [] on failure.
+    """
+    results = []
+    base = "https://gamma-api.polymarket.com/markets"
+
+    for slug in _POLYMARKET_SLUGS:
+        try:
+            resp = httpx.get(
+                base,
+                params={"slug": slug},
+                timeout=8,
+                headers={"User-Agent": "FinancialNewsBot/1.0"},
+            )
+            if not resp.is_success:
+                continue
+            data = resp.json()
+            markets = data if isinstance(data, list) else data.get("markets", [])
+            if not markets:
+                continue
+            m = markets[0]
+            # outcomePrices is a JSON string like '["0.72", "0.28"]'
+            try:
+                prices = json.loads(m.get("outcomePrices", "[]"))
+                prob = float(prices[0]) if prices else None
+            except Exception:
+                prob = None
+            results.append({
+                "question": m.get("question", slug),
+                "probability": prob,
+                "volume": m.get("volume", 0),
+                "url": f"https://polymarket.com/event/{slug}",
+            })
+            log.info(f"[Polymarket] {m.get('question', slug)[:60]} → {prob:.0%}" if prob else f"[Polymarket] {slug} → no prob")
+        except Exception as e:
+            log.warning(f"[Polymarket] Failed to fetch {slug}: {e}")
+
+    log.info(f"[Polymarket] Fetched {len(results)} markets.")
+    return results
+
+
+def polymarket_to_text(markets: list[dict]) -> str:
+    """Format Polymarket markets as plain text for AI prompt injection."""
+    if not markets:
+        return ""
+    lines = ["Polymarket Prediction Markets:"]
+    for m in markets:
+        prob_str = f"{m['probability']:.0%}" if m.get("probability") is not None else "N/A"
+        lines.append(f"  • {m['question']} → {prob_str}")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GITHUB GIST — write structured intel snapshot for the investing tool
+# ─────────────────────────────────────────────────────────────────────────────
+
+def write_to_gist(
+    narrative: str | None,
+    top_alerts: list[dict],
+    polymarket: list[dict],
+) -> bool:
+    """
+    Write a structured JSON snapshot to a GitHub Gist.
+    The investing tool reads this Gist URL on load to get fresh intel from the bot.
+
+    Requires env vars:
+      GITHUB_GIST_TOKEN — GitHub personal access token with gist scope
+      GITHUB_GIST_ID    — ID of the Gist to update (create manually first)
+
+    Returns True on success.
+    """
+    token = os.getenv("GITHUB_GIST_TOKEN", "").strip()
+    gist_id = os.getenv("GITHUB_GIST_ID", "").strip()
+
+    if not token or not gist_id:
+        log.warning("[Gist] Skipping — GITHUB_GIST_TOKEN or GITHUB_GIST_ID not set.")
+        return False
+
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "narrative": narrative or "",
+        "top_alerts": [
+            {
+                "summary": a["score"]["summary"],
+                "sentiment": a["score"]["sentiment"],
+                "category": a["score"]["category"],
+                "impact": a["score"]["impact"],
+                "url": a["tweet"]["url"],
+                "author": a["tweet"]["author"],
+                "text": a["tweet"]["text"][:280],
+                "ts": a["tweet"]["created_at"].isoformat(),
+            }
+            for a in top_alerts
+        ],
+        "polymarket": polymarket,
+    }
+
+    try:
+        resp = httpx.patch(
+            f"https://api.github.com/gists/{gist_id}",
+            json={
+                "files": {
+                    "financial_intel.json": {
+                        "content": json.dumps(payload, indent=2),
+                    }
+                }
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=15,
+        )
+        if resp.is_success:
+            log.info(f"[Gist] Snapshot written — {len(top_alerts)} alerts, {len(polymarket)} PM markets.")
+            return True
+        else:
+            log.error(f"[Gist] Failed ({resp.status_code}): {resp.text[:200]}")
+            return False
+    except Exception as e:
+        log.error(f"[Gist] Request error: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN ORCHESTRATION
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -823,6 +1015,7 @@ async def main():
 
     # ── Step 4: Batch-score with Groq, send qualifying alerts ──────────────
     alerts_sent = 0
+    gist_alerts: list[dict] = []  # Collect for Gist snapshot
     total_batches = (len(tweets) + BATCH_SIZE - 1) // BATCH_SIZE
     log.info(f"[Main] Scoring {len(tweets)} tweets in {total_batches} batches of {BATCH_SIZE}.")
 
@@ -864,18 +1057,30 @@ async def main():
 
             if tg_ok or dc_ok:
                 alerts_sent += 1
+                gist_alerts.append({"tweet": tweet, "score": score})
                 log.info(f"[Main] Alert #{alerts_sent} sent (Telegram={tg_ok}, Discord={dc_ok}).")
 
             # Telegram flood control
             await asyncio.sleep(TELEGRAM_RATE_LIMIT_SLEEP)
 
     # ── Step 4b: Narrative Detection ──────────────────────────────────────────
+    narrative_msg = None
     if tweets:
         await asyncio.sleep(GROQ_RATE_LIMIT_SLEEP)
         narrative_msg = detect_narratives(tweets, groq_client, market_snapshot=snapshot, finviz_context=finviz_context)
         if narrative_msg:
             send_telegram(narrative_msg)
             send_discord(narrative_msg)
+
+    # ── Step 4c: Polymarket Macro Markets ─────────────────────────────────────
+    polymarket_data = fetch_polymarket_markets()
+
+    # ── Step 4d: Write Gist Snapshot ──────────────────────────────────────────
+    write_to_gist(
+        narrative=narrative_msg,
+        top_alerts=gist_alerts,
+        polymarket=polymarket_data,
+    )
 
     # ── Step 5: Summary ────────────────────────────────────────────────────────
     log.info("=" * 60)

@@ -23,14 +23,47 @@ except ImportError:
 
 
 def _apply_patch():
-    """Same patch as in main.py — handles x.com's unquoted JS keys."""
-    def _patched_get_scripts_list(text: str):
-        try:
-            chunk = text.split('e=>e+"."+')[1].split('[e]+"a.js"')[0]
-        except (IndexError, Exception):
-            return
-        for key, val in re.findall(r'"?([^":\s{},]+)"?\s*:\s*"([a-f0-9]{5,10})"', chunk):
+    """Same 4-strategy patch as main.py — handles x.com's frequently-changing webpack format."""
+    _HASH_PAT = re.compile(r'"?([^":\s{},\[\]]+)"?\s*:\s*"([a-f0-9]{5,10})"')
+
+    def _extract_from_chunk(chunk_text):
+        for key, val in _HASH_PAT.findall(chunk_text):
             yield script_url(key, f"{val}a")
+
+    def _patched_get_scripts_list(text):
+        # Strategy 1: webpack 4 (e=>e+"."+{...}[e]+"a.js")
+        if 'e=>e+"."+' in text and '[e]+"a.js"' in text:
+            try:
+                chunk = text.split('e=>e+"."+')[1].split('[e]+"a.js"')[0]
+                results = list(_extract_from_chunk(chunk))
+                if results:
+                    yield from results
+                    return
+            except Exception:
+                pass
+        # Strategy 2: webpack 5 ({map}[e]||e pattern)
+        try:
+            m = re.search(r'\{([^{}]{40,})\}\[e\]', text)
+            if m:
+                results = list(_extract_from_chunk(m.group(1)))
+                if results:
+                    yield from results
+                    return
+        except Exception:
+            pass
+        # Strategy 3: direct ondemand.s.* URL scan
+        direct = re.findall(
+            r'https://abs\.twimg\.com/responsive-web/client-web/ondemand\.s\.[a-f0-9a-z]+\.js',
+            text,
+        )
+        if direct:
+            yield from dict.fromkeys(direct)
+            return
+        # Strategy 4: all client-web JS chunks as fallback
+        yield from dict.fromkeys(re.findall(
+            r'https://abs\.twimg\.com/responsive-web/client-web/[a-zA-Z0-9._/-]+\.js',
+            text,
+        ))
 
     _xclid.get_scripts_list = _patched_get_scripts_list
 
