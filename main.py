@@ -148,12 +148,12 @@ MODEL_ID = "llama-3.3-70b-versatile"
 MIN_IMPACT_SCORE = 8
 
 # Maximum alerts to send per bot run (prevents Telegram spam on busy news days)
-MAX_ALERTS = 5
+MAX_ALERTS = 3
 
 # === QUALITY FILTERS ===
-# Relaxed to let more tweets through — the LLM score is the main gate
-MIN_VIEWS = 200
-MIN_FOLLOWERS = 0
+# Pre-LLM gate — only tweets with real reach go to Groq (saves API quota)
+MIN_VIEWS = 1000
+MIN_FOLLOWERS = 500
 
 # How many minutes back to search for tweets (5-min buffer over 30-min cron)
 # This small overlap ensures no tweets fall through the gap between runs
@@ -381,12 +381,14 @@ Live Market Signals (from FinViz — use to cross-validate tweet claims):
 {finviz_block}
 {tweet_list}
 
-Rules:
-- Downgrade hype ("trillions", "moon", "insane", excessive tags)
-- Only high score if it actually moves gold/silver/oil/TLT/SPX/DJ30/Russell/NDX/USDJPY or macro narrative
-- Be extremely strict on low-value spam
-- If a tweet mentions a ticker that appears in the FinViz signals (unusual volume, top gainer/loser), increase its score by 1-2 points
-- If a tweet makes a claim contradicted by actual market data, decrease its score
+Scoring rules — be ruthless:
+- 8-10: ONLY verified breaking news with immediate, concrete price impact (Fed surprise, CPI miss/beat, war escalation, earnings shock, central bank pivot). Must be specific, sourced, and actionable RIGHT NOW.
+- 6-7: Meaningful data or commentary with delayed impact. Notable but not urgent.
+- 1-5: Opinion, speculation, hype, repeating known news, vague macro takes, excessive hashtags/cashtags.
+- Default to 5 or below unless the tweet would cause a trader to act within the hour.
+- Downgrade anything without a verifiable source, specific number, or named institution.
+- Downgrade hype language ("trillions", "moon", "insane", "🚀🚀🚀").
+- If a tweet mentions a ticker in FinViz unusual volume, +1. If it contradicts market data, -2.
 
 Reply in EXACT JSON format with no extra text:
 {{"results": [{{"id": 1, "score": <int 1-10>, "sentiment": "<Bullish OR Bearish OR Neutral>", "category": "<Commodities OR Macro OR Indices OR Bonds OR Forex OR Crypto OR Earnings>", "summary": "<one crisp actionable sentence, max 22 words>"}}, ...]}}"""
