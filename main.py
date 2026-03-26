@@ -850,13 +850,29 @@ def scrape_finviz_signals() -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Slugs for macro-relevant Polymarket markets (free public API, no auth)
+# Sources: Macro Indicators (tag 102000), Khamenei/Iran (tag 102304), Beirut (tag 104291)
 _POLYMARKET_SLUGS = [
-    "will-the-fed-cut-rates-in-2025",
-    "us-recession-2025",
-    "will-cpi-exceed-3-in-2025",
-    "will-trump-impose-additional-tariffs-on-china-in-2025",
-    "will-us-gdp-growth-exceed-2-in-2025",
+    # ── Macro / Fed / Inflation ──────────────────────────────────────────────
+    "will-the-feds-lower-bound-reach-0-or-lower-before-2027-196-363-557-457-329-251-881",
+    "will-inflation-reach-more-than-5-in-2026-282",
+    "will-annual-inflation-increase-by-2pt7-in-march-955",
+    "will-monthly-inflation-increase-by-0pt4-in-march-426",
+    "will-chinas-2026-annual-gdp-growth-yy-be-between-4pt0-and-5pt0",
+    "will-china-gdp-growth-in-q1-2026-be-at-least-6pt0",
+    "tech-layoffs-up-or-down-in-february-2026",
+    # ── Iran / Hormuz / Geopolitical ────────────────────────────────────────
+    "will-the-kharg-island-oil-terminal-be-hit-by-april-30-484",
+    "iran-leadership-change-by-may-31-593-194-829",
+    "us-x-iran-meeting-by-april-30-2026",
+    "iran-leadership-change-by-december-31-974-976-658-482-568",
+    # ── Geopolitical misc ───────────────────────────────────────────────────
+    "will-russia-capture-pokrovka-by-march-31",
+    "will-venezuela-become-51st-state",
 ]
+
+# Tag IDs for rotating/daily markets — fetches top 1 by volume per tag
+# Beirut (104291), Black Sea (101958)
+_POLYMARKET_TAG_IDS = [104291, 101958]
 
 
 def fetch_polymarket_markets() -> list[dict]:
@@ -897,6 +913,37 @@ def fetch_polymarket_markets() -> list[dict]:
             log.info(f"[Polymarket] {m.get('question', slug)[:60]} → {prob:.0%}" if prob else f"[Polymarket] {slug} → no prob")
         except Exception as e:
             log.warning(f"[Polymarket] Failed to fetch {slug}: {e}")
+
+    # ── Tag-based fetch for rotating daily markets ───────────────────────────
+    for tag_id in _POLYMARKET_TAG_IDS:
+        try:
+            resp = httpx.get(
+                base,
+                params={"active": "true", "closed": "false", "tag_id": tag_id, "limit": 1, "order": "volume", "ascending": "false"},
+                timeout=8,
+                headers={"User-Agent": "FinancialNewsBot/1.0"},
+            )
+            if not resp.is_success:
+                continue
+            markets = resp.json()
+            if not markets:
+                continue
+            m = markets[0]
+            slug = m.get("slug", "")
+            try:
+                prices = json.loads(m.get("outcomePrices", "[]"))
+                prob = float(prices[0]) if prices else None
+            except Exception:
+                prob = None
+            results.append({
+                "question": m.get("question", slug),
+                "probability": prob,
+                "volume": m.get("volume", 0),
+                "url": f"https://polymarket.com/event/{slug}",
+            })
+            log.info(f"[Polymarket/tag={tag_id}] {m.get('question', slug)[:60]} → {prob:.0%}" if prob else f"[Polymarket/tag={tag_id}] {slug} → no prob")
+        except Exception as e:
+            log.warning(f"[Polymarket] Failed to fetch tag {tag_id}: {e}")
 
     log.info(f"[Polymarket] Fetched {len(results)} markets.")
     return results
