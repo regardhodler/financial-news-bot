@@ -1039,7 +1039,10 @@ async def main():
     # ── Step 3: Scrape tweets ──────────────────────────────────────────────────
     tweets = await scrape_tweets(api)
     if not tweets:
-        log.info("[Main] No tweets found in lookback window. Nothing to process.")
+        log.info("[Main] No tweets found in lookback window — skipping scoring/alerts.")
+        # Still fetch Polymarket and write Gist snapshot even with no tweets
+        polymarket_data = fetch_polymarket_markets()
+        write_to_gist(narrative=None, top_alerts=[], polymarket=polymarket_data)
         log.info("=" * 60)
         return
 
